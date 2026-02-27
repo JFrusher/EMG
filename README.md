@@ -153,6 +153,12 @@ Dual-pad mode (left pad closes, right pad opens; summed signal drives stage plot
 python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --ui-mode gripper
 ```
 
+Dual-pad emulation with ~1s delayed side B (for demonstration effects):
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --emulate-dual-delay --dual-delay-sec 1.0 --ui-mode gripper
+```
+
 For live streams, if your source sends dual channels, the app will automatically sense both sides and detect co-contraction events.
 
 Behavior notes:
@@ -164,6 +170,7 @@ Behavior notes:
 - The live UI always keeps scrolling stage plots from raw signal to final envelope.
 - A live "Noise Reduction vs Raw" panel quantifies stage-by-stage cleaning using a jitter/noise proxy, making filter benefit explicit for viewers.
 - In dual-pad mode, left/close and right/open amplitudes are shown as bilateral bars with a center line, and co-contraction events are logged.
+- A `Calibrate` button is available in both gripper and debug modes to tune left/right sensitivity per participant.
 
 ---
 

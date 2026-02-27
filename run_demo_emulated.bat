@@ -44,7 +44,7 @@ echo Using Python: %PY%
 
 echo Starting EMG dataset-emulated demo (sequential replay, loop)...
 if "%~1"=="" (
-  %PY% public_engagement_demo.py --source dataset --dataset-source raw --replay-speed 1.0 --replay-loop --ui-mode gripper
+  %PY% public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-speed 1.0 --replay-loop --emulate-dual-delay --dual-delay-sec 1.0 --ui-mode gripper --lightweight-mode
 ) else (
   %PY% public_engagement_demo.py %*
 )

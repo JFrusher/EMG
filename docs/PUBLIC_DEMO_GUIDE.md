@@ -89,6 +89,17 @@ python public_engagement_demo.py --source dataset --dataset-source raw --side-a-
 
 The gripper panel now includes bilateral pad-amplitude bars and logs **co-contraction events** when both sides are active together.
 
+To emulate asynchronous dual-pad behavior, delay side B by about 1 second:
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --emulate-dual-delay --dual-delay-sec 1.0 --ui-mode gripper
+```
+
+Calibration:
+- A `Calibrate` button is present in both UI modes.
+- Press it and perform representative contractions for ~4 seconds.
+- The app then applies side-specific normalization for more consistent control between participants.
+
 Notes:
 - `--dataset-source raw|filtered` switches folder.
 - `--dataset-channel` can target one channel/column in multichannel CSV files.

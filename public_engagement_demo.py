@@ -787,7 +787,6 @@ class PublicEngagementDashboard:
         self.fig = None
         self.axes = {}
         self.lines = {}
-        self.fills = {}
         self.stage_badges = {}
         self.event_text = None
         self.status_text = None
@@ -815,7 +814,7 @@ class PublicEngagementDashboard:
         self.pause_button = None
         self.calibrate_button = None
         self.event_times: Deque[float] = deque(maxlen=12)
-        self.event_marker_artists: List = []
+        self.event_marker_line = None
         self.pad_bar_left = None
         self.pad_bar_right = None
         self.pad_value_text = None
@@ -825,6 +824,17 @@ class PublicEngagementDashboard:
             "rectified": deque(maxlen=20),
             "lowpass": deque(maxlen=20),
             "envelope": deque(maxlen=20),
+        }
+        self.render_stride = max(1, self.max_samples // 1800)
+        self.time_axis_view = self.time_axis[::self.render_stride]
+        self.metric_frame_counter = 0
+        self.metric_every_n_frames = 3
+        self.cached_improvements = {
+            "notch": 0.0,
+            "bandpass": 0.0,
+            "rectified": 0.0,
+            "lowpass": 0.0,
+            "envelope": 0.0,
         }
 
     def _norm_envelope(self) -> float:
@@ -903,8 +913,7 @@ class PublicEngagementDashboard:
         for idx, (key, title) in enumerate(zip(stage_keys, stage_titles)):
             ax = self.fig.add_subplot(gs[idx, 0])
             data = np.abs(np.array(self.buffers[key]))
-            line, = ax.plot(self.time_axis, data, linewidth=1.6, color=self.stage_colors[key])
-            fill = ax.fill_between(self.time_axis, 0, data, color=self.stage_colors[key], alpha=0.10)
+            line, = ax.plot(self.time_axis_view, data[::self.render_stride], linewidth=1.6, color=self.stage_colors[key])
             ax.set_xlim(-self.cfg.view_seconds, 0)
             ax.grid(alpha=0.25)
             ax.set_ylabel("V")
@@ -925,7 +934,6 @@ class PublicEngagementDashboard:
 
             self.axes[key] = ax
             self.lines[key] = line
-            self.fills[key] = fill
             if key != "raw":
                 self.stage_badges[key] = ax.text(
                     0.985,
@@ -967,6 +975,16 @@ class PublicEngagementDashboard:
             linestyle=":",
             linewidth=0.9,
             alpha=0.8,
+        )
+        self.event_marker_line, = ax_env.plot(
+            [],
+            [],
+            linestyle="None",
+            marker="|",
+            markersize=12,
+            markeredgewidth=1.5,
+            color="#EC4899",
+            alpha=0.85,
         )
 
     def _setup_gripper_panel(self, panel_ax) -> None:
@@ -1199,22 +1217,23 @@ class PublicEngagementDashboard:
         return out
 
     def _draw_event_markers(self) -> None:
-        for artist in self.event_marker_artists:
-            try:
-                artist.remove()
-            except Exception:
-                pass
-        self.event_marker_artists = []
-
+        if self.event_marker_line is None:
+            return
         now = time.perf_counter() - self.session_t0
+        xs = []
         for ev_time in self.event_times:
             rel_t = ev_time - now
             if rel_t < -self.cfg.view_seconds or rel_t > 0:
                 continue
-            for key in self.stage_keys:
-                ax = self.axes[key]
-                marker = ax.axvline(rel_t, color="#EC4899", linestyle="--", linewidth=1.0, alpha=0.65)
-                self.event_marker_artists.append(marker)
+            xs.append(rel_t)
+
+        if len(xs) == 0:
+            self.event_marker_line.set_data([], [])
+            return
+
+        y_top = self.axes["envelope"].get_ylim()[1] * 0.92
+        ys = [y_top] * len(xs)
+        self.event_marker_line.set_data(xs, ys)
 
     def _update_gripper_panel(self) -> None:
         if self.ui_mode != "gripper":
@@ -1253,6 +1272,7 @@ class PublicEngagementDashboard:
             return
 
         expected = max(1, int(self.cfg.sample_rate_hz * dt))
+        expected = min(expected, int(self.cfg.sample_rate_hz * 0.12))
         samples_dual = self.source.read_available_dual(max_samples=expected * 2)
 
         if len(samples_dual) == 0:
@@ -1334,33 +1354,25 @@ class PublicEngagementDashboard:
     def _update_plot_lines(self) -> None:
         for key, line in self.lines.items():
             mag = np.abs(np.array(self.buffers[key], dtype=np.float32))
-            line.set_ydata(mag)
-
-            if self.fills.get(key) is not None:
-                try:
-                    self.fills[key].remove()
-                except Exception:
-                    pass
-            self.fills[key] = self.axes[key].fill_between(
-                self.time_axis,
-                0,
-                mag,
-                color=self.stage_colors[key],
-                alpha=0.10 if key != "envelope" else 0.18,
-            )
+            line.set_ydata(mag[::self.render_stride])
 
         self._apply_autoscale_if_enabled()
         self._draw_event_markers()
 
-        improvements = self._compute_stage_improvements()
-        for key, badge in self.stage_badges.items():
-            val = improvements.get(key, 0.0)
-            is_pos = val >= 0
-            badge.set_text(f"{val:+5.1f}% cleaner")
-            if is_pos:
-                badge.set_bbox(dict(boxstyle="round,pad=0.25", facecolor="#DCFCE7", edgecolor="#86EFAC", alpha=0.9))
-            else:
-                badge.set_bbox(dict(boxstyle="round,pad=0.25", facecolor="#FEE2E2", edgecolor="#FCA5A5", alpha=0.9))
+        self.metric_frame_counter += 1
+        should_recompute_metrics = (self.metric_frame_counter % self.metric_every_n_frames) == 0
+        if should_recompute_metrics:
+            self.cached_improvements = self._compute_stage_improvements()
+            for key, badge in self.stage_badges.items():
+                val = self.cached_improvements.get(key, 0.0)
+                is_pos = val >= 0
+                badge.set_text(f"{val:+5.1f}% cleaner")
+                if is_pos:
+                    badge.set_bbox(dict(boxstyle="round,pad=0.25", facecolor="#DCFCE7", edgecolor="#86EFAC", alpha=0.9))
+                else:
+                    badge.set_bbox(dict(boxstyle="round,pad=0.25", facecolor="#FEE2E2", edgecolor="#FCA5A5", alpha=0.9))
+
+        improvements = self.cached_improvements
 
         env = np.array(self.buffers["envelope"], dtype=np.float32)
         p95 = float(np.percentile(env, 95))
@@ -1373,10 +1385,10 @@ class PublicEngagementDashboard:
         event_body = "\n".join(self.event_log) if self.event_log else "(no events yet)"
         self.event_text.set_text("Events:\n" + event_body)
 
-        if self.clarity_text is not None:
+        if self.clarity_text is not None and should_recompute_metrics:
             self.clarity_text.set_text(self._format_clarity_metrics(improvements, compact=self.ui_mode == "gripper"))
 
-        if self.ui_mode == "gripper" and self.clarity_bar is not None and self.clarity_text_small is not None:
+        if self.ui_mode == "gripper" and self.clarity_bar is not None and self.clarity_text_small is not None and should_recompute_metrics:
             env_gain = float(np.clip(improvements.get("envelope", 0.0), -100.0, 100.0))
             gain_pos = max(0.0, env_gain)
             width = 8.0 * (gain_pos / 100.0)
@@ -1434,7 +1446,8 @@ class PublicEngagementDashboard:
 
         artists = list(self.lines.values())
         artists.extend(list(self.stage_badges.values()))
-        artists.extend(self.event_marker_artists)
+        if self.event_marker_line is not None:
+            artists.append(self.event_marker_line)
         if self.ui_mode == "gripper":
             artists.extend(self.finger_patches)
             artists.extend([self.force_bar, self.grip_text])
@@ -1584,6 +1597,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-rate", type=int, default=1000, help="Pipeline sample rate")
     parser.add_argument("--view-seconds", type=float, default=8.0, help="Visible scrolling window")
     parser.add_argument("--frame-ms", type=int, default=40, help="UI frame interval")
+    parser.add_argument("--lightweight-mode", action="store_true", help="Reduce rendering load for low-spec machines")
 
     parser.add_argument("--event-high", type=float, default=0.28, help="Event trigger normalized threshold")
     parser.add_argument("--event-low", type=float, default=0.20, help="Event reset normalized threshold")
@@ -1611,6 +1625,13 @@ def main() -> None:
         emulate_dual_delay=args.emulate_dual_delay,
         dual_delay_sec=args.dual_delay_sec,
     )
+
+    if args.lightweight_mode:
+        dashboard.metric_every_n_frames = 5
+        dashboard.autoscale_alpha = 0.30
+        dashboard.render_stride = max(dashboard.render_stride, 3)
+        dashboard.time_axis_view = dashboard.time_axis[::dashboard.render_stride]
+
     dashboard.run()
 
 
