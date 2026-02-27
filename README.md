@@ -147,6 +147,14 @@ Debug console mode (replaces gripper panel with live numeric telemetry + control
 python public_engagement_demo.py --source dataset --dataset-source raw --replay-loop --ui-mode debug
 ```
 
+Dual-pad mode (left pad closes, right pad opens; summed signal drives stage plots):
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --ui-mode gripper
+```
+
+For live streams, if your source sends dual channels, the app will automatically sense both sides and detect co-contraction events.
+
 Behavior notes:
 - If BLE/Serial cannot initialize, demo auto-falls back to synthetic input by default.
 - Dataset source replays CSV files sequentially from `EMGdataset/dataset/raw_signals` or `filtered_signals`.
@@ -155,6 +163,7 @@ Behavior notes:
 - Debug mode includes interactive buttons: Pause/Resume, Reset events, Snapshot, and AutoScale.
 - The live UI always keeps scrolling stage plots from raw signal to final envelope.
 - A live "Noise Reduction vs Raw" panel quantifies stage-by-stage cleaning using a jitter/noise proxy, making filter benefit explicit for viewers.
+- In dual-pad mode, left/close and right/open amplitudes are shown as bilateral bars with a center line, and co-contraction events are logged.
 
 ---
 

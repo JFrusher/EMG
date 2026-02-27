@@ -74,6 +74,21 @@ Debug controls in-panel:
 - `Snapshot` save current screen into `results/`
 - `AutoScale` dynamic y-axis scaling for stage plots
 
+### Dual-pad directional control mode
+
+Use two dry-EMG pads (one each side of forearm):
+- Left/side A pad controls **close** direction
+- Right/side B pad controls **open** direction
+- The **sum** of both channels drives the main stage plots (raw → envelope)
+
+Example with dataset channel names:
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --ui-mode gripper
+```
+
+The gripper panel now includes bilateral pad-amplitude bars and logs **co-contraction events** when both sides are active together.
+
 Notes:
 - `--dataset-source raw|filtered` switches folder.
 - `--dataset-channel` can target one channel/column in multichannel CSV files.

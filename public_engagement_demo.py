@@ -53,6 +53,8 @@ from matplotlib.widgets import Button
 
 plt.style.use("seaborn-v0_8-whitegrid")
 
+DualSample = Tuple[float, float]
+
 
 # =============================================================================
 # Configuration
@@ -102,6 +104,10 @@ class BaseSignalSource(ABC):
     def read_available(self, max_samples: int) -> List[float]:
         pass
 
+    def read_available_dual(self, max_samples: int) -> List[DualSample]:
+        singles = self.read_available(max_samples)
+        return [(float(v), 0.0) for v in singles]
+
 
 class SyntheticEMGSource(BaseSignalSource):
     """Stable synthetic source used as default fallback in public demos."""
@@ -110,7 +116,8 @@ class SyntheticEMGSource(BaseSignalSource):
         super().__init__(sample_rate_hz)
         self._running = False
         self._phase = 0.0
-        self._activation_phase = 0.0
+        self._activation_a = 0.0
+        self._activation_b = 0.0
 
     def start(self) -> None:
         self._running = True
@@ -118,32 +125,45 @@ class SyntheticEMGSource(BaseSignalSource):
     def stop(self) -> None:
         self._running = False
 
-    def read_available(self, max_samples: int) -> List[float]:
+    def read_available_dual(self, max_samples: int) -> List[DualSample]:
         if not self._running or max_samples <= 0:
             return []
 
-        out: List[float] = []
+        out: List[DualSample] = []
         dt = 1.0 / self.sample_rate_hz
 
         for _ in range(max_samples):
             self._phase += 2.0 * math.pi * dt
-            self._activation_phase += 2.0 * math.pi * 0.45 * dt
+            self._activation_a += 2.0 * math.pi * 0.42 * dt
+            self._activation_b += 2.0 * math.pi * 0.38 * dt
 
-            burst = 0.5 * (1.0 + math.sin(self._activation_phase))
-            burst = burst ** 1.8
+            burst_a = (0.5 * (1.0 + math.sin(self._activation_a))) ** 1.9
+            burst_b = (0.5 * (1.0 + math.sin(self._activation_b + 1.8))) ** 2.0
 
-            emg = (
+            emg_a = (
                 0.20 * math.sin(2 * math.pi * 70 * self._phase)
                 + 0.16 * math.sin(2 * math.pi * 95 * self._phase)
                 + 0.12 * math.sin(2 * math.pi * 130 * self._phase)
             )
-            noise = np.random.normal(0.0, 0.05)
+            emg_b = (
+                0.18 * math.sin(2 * math.pi * 65 * self._phase + 0.8)
+                + 0.13 * math.sin(2 * math.pi * 110 * self._phase + 1.1)
+                + 0.10 * math.sin(2 * math.pi * 145 * self._phase + 0.2)
+            )
+
+            noise_a = np.random.normal(0.0, 0.05)
+            noise_b = np.random.normal(0.0, 0.05)
             powerline = 0.05 * math.sin(2 * math.pi * 50 * self._phase)
 
-            v = 1.65 + burst * (emg + noise + powerline)
-            out.append(float(np.clip(v, 0.0, 3.3)))
+            va = 1.65 + burst_a * (emg_a + noise_a + powerline)
+            vb = 1.65 + burst_b * (emg_b + noise_b + powerline)
+            out.append((float(np.clip(va, 0.0, 3.3)), float(np.clip(vb, 0.0, 3.3))))
 
         return out
+
+    def read_available(self, max_samples: int) -> List[float]:
+        dual = self.read_available_dual(max_samples)
+        return [float(np.clip(a + b, 0.0, 3.3)) for a, b in dual]
 
 
 class SerialEMGSource(BaseSignalSource):
@@ -174,26 +194,42 @@ class SerialEMGSource(BaseSignalSource):
                 pass
         self._serial = None
 
-    def _decode_line(self, line: str) -> Optional[float]:
+    @staticmethod
+    def _to_voltage(value: float) -> float:
+        if value > 3.3:
+            return float(np.clip((value / 4095.0) * 3.3, 0.0, 3.3))
+        return float(np.clip(value, 0.0, 3.3))
+
+    def _decode_line(self, line: str) -> Optional[DualSample]:
         if not line or line.startswith("===") or line.startswith("---"):
             return None
 
-        parts = line.split(",")
-        if len(parts) != 2:
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) < 2:
             return None
 
-        try:
-            adc_raw = int(parts[1])
-        except ValueError:
+        nums: List[float] = []
+        for p in parts:
+            try:
+                nums.append(float(p))
+            except ValueError:
+                pass
+
+        if len(nums) < 2:
             return None
 
-        return float(np.clip((adc_raw / 4095.0) * 3.3, 0.0, 3.3))
+        # Legacy ESP32 format: timestamp_ms,adc_raw_value
+        if len(nums) == 2:
+            return self._to_voltage(nums[1]), 0.0
 
-    def read_available(self, max_samples: int) -> List[float]:
+        # Dual-pad serial format: timestamp,pad_a,pad_b  OR  pad_a,pad_b
+        return self._to_voltage(nums[-2]), self._to_voltage(nums[-1])
+
+    def read_available_dual(self, max_samples: int) -> List[DualSample]:
         if not self._running or self._serial is None or max_samples <= 0:
             return []
 
-        samples: List[float] = []
+        samples: List[DualSample] = []
         for _ in range(max_samples):
             try:
                 raw = self._serial.readline()
@@ -213,6 +249,10 @@ class SerialEMGSource(BaseSignalSource):
 
         return samples
 
+    def read_available(self, max_samples: int) -> List[float]:
+        dual = self.read_available_dual(max_samples)
+        return [float(np.clip(a + b, 0.0, 3.3)) for a, b in dual]
+
 
 class DatasetReplaySource(BaseSignalSource):
     """Replay dataset CSV files sequentially as pseudo-live EMG input."""
@@ -223,6 +263,8 @@ class DatasetReplaySource(BaseSignalSource):
         dataset_dir: str,
         dataset_source: str = "raw",
         channel: Optional[str] = None,
+        side_a_channel: Optional[str] = None,
+        side_b_channel: Optional[str] = None,
         replay_speed: float = 1.0,
         loop: bool = False,
     ):
@@ -230,12 +272,15 @@ class DatasetReplaySource(BaseSignalSource):
         self.dataset_dir = dataset_dir
         self.dataset_source = dataset_source
         self.channel = channel
+        self.side_a_channel = side_a_channel
+        self.side_b_channel = side_b_channel
         self.replay_speed = max(0.05, float(replay_speed))
         self.loop = loop
 
         self.files: List[str] = self._discover_files()
         self.file_idx = 0
-        self.current_data = np.array([], dtype=np.float32)
+        self.current_data_a = np.array([], dtype=np.float32)
+        self.current_data_b = np.array([], dtype=np.float32)
         self.current_pos = 0
         self.current_file = "(none)"
 
@@ -254,7 +299,21 @@ class DatasetReplaySource(BaseSignalSource):
             raise FileNotFoundError(f"No CSV files found in: {folder}")
         return files
 
-    def _extract_signal(self, filepath: str) -> np.ndarray:
+    def _select_channel(self, df: pd.DataFrame, numeric_cols: List[str], selector: Optional[str]) -> np.ndarray:
+        if selector is None:
+            raise ValueError("selector cannot be None")
+        if str(selector).isdigit():
+            idx = int(selector)
+            if idx < 0 or idx >= len(numeric_cols):
+                raise IndexError(
+                    f"Channel index {idx} out of range for available 0..{len(numeric_cols)-1}"
+                )
+            return df[numeric_cols[idx]].values.astype(np.float32)
+        if selector not in numeric_cols:
+            raise ValueError(f"Channel '{selector}' not found. Available: {numeric_cols}")
+        return df[selector].values.astype(np.float32)
+
+    def _extract_dual_signal(self, filepath: str) -> Tuple[np.ndarray, np.ndarray]:
         df = pd.read_csv(filepath)
 
         drop_cols = []
@@ -269,37 +328,41 @@ class DatasetReplaySource(BaseSignalSource):
         if not numeric_cols:
             raise ValueError(f"No numeric columns in {os.path.basename(filepath)}")
 
-        if self.channel is not None:
-            if str(self.channel).isdigit():
-                idx = int(self.channel)
-                if idx < 0 or idx >= len(numeric_cols):
-                    raise IndexError(
-                        f"Channel index {idx} out of range for {os.path.basename(filepath)}; "
-                        f"available 0..{len(numeric_cols)-1}"
-                    )
-                sig = df[numeric_cols[idx]].values.astype(np.float32)
-            else:
-                if self.channel not in numeric_cols:
-                    raise ValueError(
-                        f"Channel '{self.channel}' not found in {os.path.basename(filepath)}. "
-                        f"Available: {numeric_cols}"
-                    )
-                sig = df[self.channel].values.astype(np.float32)
+        if self.side_a_channel is not None or self.side_b_channel is not None:
+            sig_a = (
+                self._select_channel(df, numeric_cols, self.side_a_channel)
+                if self.side_a_channel is not None
+                else np.zeros(len(df), dtype=np.float32)
+            )
+            sig_b = (
+                self._select_channel(df, numeric_cols, self.side_b_channel)
+                if self.side_b_channel is not None
+                else np.zeros(len(df), dtype=np.float32)
+            )
+        elif self.channel is not None:
+            sig_a = self._select_channel(df, numeric_cols, self.channel)
+            sig_b = np.zeros_like(sig_a)
         else:
             if "adc_raw_value" in df.columns:
-                sig = df["adc_raw_value"].values.astype(np.float32)
+                sig_a = df["adc_raw_value"].values.astype(np.float32)
+                sig_b = np.zeros_like(sig_a)
             elif "voltage" in df.columns:
-                sig = df["voltage"].values.astype(np.float32)
-            elif len(numeric_cols) == 1:
-                sig = df[numeric_cols[0]].values.astype(np.float32)
+                sig_a = df["voltage"].values.astype(np.float32)
+                sig_b = np.zeros_like(sig_a)
+            elif len(numeric_cols) >= 2:
+                sig_a = df[numeric_cols[0]].values.astype(np.float32)
+                sig_b = df[numeric_cols[1]].values.astype(np.float32)
             else:
-                sig = df[numeric_cols].mean(axis=1).values.astype(np.float32)
+                sig_a = df[numeric_cols[0]].values.astype(np.float32)
+                sig_b = np.zeros_like(sig_a)
 
-        if np.nanmax(sig) > 3.3:
-            sig = (sig / 4095.0) * 3.3
+        for arr in [sig_a, sig_b]:
+            if np.nanmax(arr) > 3.3:
+                arr[:] = (arr / 4095.0) * 3.3
 
-        sig = np.nan_to_num(sig, nan=1.65, posinf=3.3, neginf=0.0)
-        return np.clip(sig, 0.0, 3.3)
+        sig_a = np.nan_to_num(sig_a, nan=1.65, posinf=3.3, neginf=0.0)
+        sig_b = np.nan_to_num(sig_b, nan=1.65, posinf=3.3, neginf=0.0)
+        return np.clip(sig_a, 0.0, 3.3), np.clip(sig_b, 0.0, 3.3)
 
     def _load_current_file(self) -> bool:
         if self.file_idx >= len(self.files):
@@ -310,7 +373,7 @@ class DatasetReplaySource(BaseSignalSource):
 
         try:
             current_path = self.files[self.file_idx]
-            self.current_data = self._extract_signal(current_path)
+            self.current_data_a, self.current_data_b = self._extract_dual_signal(current_path)
             self.current_pos = 0
             self.current_file = os.path.basename(current_path)
             self.file_idx += 1
@@ -325,7 +388,7 @@ class DatasetReplaySource(BaseSignalSource):
         self._running = True
         self._sample_budget = 0.0
         self._last_t = time.perf_counter()
-        if self.current_data.size == 0:
+        if self.current_data_a.size == 0:
             loaded = self._load_current_file()
             if not loaded:
                 raise RuntimeError("Unable to load any dataset files for replay")
@@ -333,7 +396,7 @@ class DatasetReplaySource(BaseSignalSource):
     def stop(self) -> None:
         self._running = False
 
-    def read_available(self, max_samples: int) -> List[float]:
+    def read_available_dual(self, max_samples: int) -> List[DualSample]:
         if not self._running or max_samples <= 0:
             return []
 
@@ -348,27 +411,32 @@ class DatasetReplaySource(BaseSignalSource):
 
         self._sample_budget -= want
 
-        out: List[float] = []
+        out: List[DualSample] = []
         while len(out) < want:
-            if self.current_pos >= len(self.current_data):
+            if self.current_pos >= len(self.current_data_a):
                 if not self._load_current_file():
                     self._running = False
                     break
 
             remaining = want - len(out)
-            end = min(self.current_pos + remaining, len(self.current_data))
-            chunk = self.current_data[self.current_pos:end]
-            out.extend(float(v) for v in chunk)
+            end = min(self.current_pos + remaining, len(self.current_data_a))
+            chunk_a = self.current_data_a[self.current_pos:end]
+            chunk_b = self.current_data_b[self.current_pos:end]
+            out.extend((float(a), float(b)) for a, b in zip(chunk_a, chunk_b))
             self.current_pos = end
 
         return out
+
+    def read_available(self, max_samples: int) -> List[float]:
+        dual = self.read_available_dual(max_samples)
+        return [float(np.clip(a + b, 0.0, 3.3)) for a, b in dual]
 
     def status_summary(self) -> str:
         file_number = min(self.file_idx, len(self.files))
         total = len(self.files)
         return (
             f"dataset file {file_number}/{total}: {self.current_file} | "
-            f"sample {self.current_pos}/{len(self.current_data)}"
+            f"sample {self.current_pos}/{len(self.current_data_a)}"
         )
 
 
@@ -385,7 +453,7 @@ class BLEEMGSource(BaseSignalSource):
         self.address = address
         self.char_uuid = char_uuid
         self._running = False
-        self._queue: "queue.Queue[float]" = queue.Queue(maxsize=20000)
+        self._queue: "queue.Queue[DualSample]" = queue.Queue(maxsize=20000)
         self._loop_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
@@ -407,11 +475,11 @@ class BLEEMGSource(BaseSignalSource):
             self._loop_thread.join(timeout=2.0)
         self._loop_thread = None
 
-    def read_available(self, max_samples: int) -> List[float]:
+    def read_available_dual(self, max_samples: int) -> List[DualSample]:
         if not self._running or max_samples <= 0:
             return []
 
-        out: List[float] = []
+        out: List[DualSample] = []
         for _ in range(max_samples):
             try:
                 out.append(self._queue.get_nowait())
@@ -419,31 +487,45 @@ class BLEEMGSource(BaseSignalSource):
                 break
         return out
 
-    def _push(self, value: float) -> None:
+    def read_available(self, max_samples: int) -> List[float]:
+        dual = self.read_available_dual(max_samples)
+        return [float(np.clip(a + b, 0.0, 3.3)) for a, b in dual]
+
+    def _push(self, value: DualSample) -> None:
         if not self._running:
             return
-        value = float(np.clip(value, 0.0, 3.3))
+        va = float(np.clip(value[0], 0.0, 3.3))
+        vb = float(np.clip(value[1], 0.0, 3.3))
         try:
-            self._queue.put_nowait(value)
+            self._queue.put_nowait((va, vb))
         except queue.Full:
             try:
                 _ = self._queue.get_nowait()
             except queue.Empty:
                 pass
             try:
-                self._queue.put_nowait(value)
+                self._queue.put_nowait((va, vb))
             except queue.Full:
                 pass
 
-    def _parse_payload(self, payload: bytes) -> List[float]:
+    def _parse_payload(self, payload: bytes) -> List[DualSample]:
         if not payload:
             return []
+
+        if len(payload) % 4 == 0:
+            try:
+                int16_vals = np.frombuffer(payload, dtype="<i2")
+                pairs = int16_vals.reshape(-1, 2).astype(np.float32)
+                scaled = ((pairs + 32768.0) / 65535.0) * 3.3
+                return [(float(np.clip(a, 0.0, 3.3)), float(np.clip(b, 0.0, 3.3))) for a, b in scaled]
+            except Exception:
+                pass
 
         if len(payload) % 2 == 0:
             try:
                 int16_vals = np.frombuffer(payload, dtype="<i2")
                 scaled = ((int16_vals.astype(np.float32) + 32768.0) / 65535.0) * 3.3
-                return [float(np.clip(v, 0.0, 3.3)) for v in scaled]
+                return [(float(np.clip(v, 0.0, 3.3)), 0.0) for v in scaled]
             except Exception:
                 pass
 
@@ -451,20 +533,30 @@ class BLEEMGSource(BaseSignalSource):
             text = payload.decode("utf-8", errors="ignore").strip()
             if not text:
                 return []
-            values: List[float] = []
+            values: List[DualSample] = []
             for line in text.splitlines():
                 parts = [p.strip() for p in line.split(",") if p.strip()]
                 if not parts:
                     continue
-                try:
-                    last = float(parts[-1])
-                except ValueError:
+                nums: List[float] = []
+                for p in parts:
+                    try:
+                        nums.append(float(p))
+                    except ValueError:
+                        pass
+                if not nums:
                     continue
-                if last > 3.3:
-                    v = (last / 4095.0) * 3.3
+
+                if len(nums) >= 3:
+                    a_raw, b_raw = nums[-2], nums[-1]
+                elif len(nums) == 2:
+                    a_raw, b_raw = nums[0], nums[1]
                 else:
-                    v = last
-                values.append(float(np.clip(v, 0.0, 3.3)))
+                    a_raw, b_raw = nums[0], 0.0
+
+                a = (a_raw / 4095.0) * 3.3 if a_raw > 3.3 else a_raw
+                b = (b_raw / 4095.0) * 3.3 if b_raw > 3.3 else b_raw
+                values.append((float(np.clip(a, 0.0, 3.3)), float(np.clip(b, 0.0, 3.3))))
             return values
         except Exception:
             return []
@@ -602,9 +694,10 @@ class DemoGripper:
         self.grip_force_n = 0.0
         self.grip_label = "OPEN"
 
-    def step(self, envelope_norm: float) -> None:
-        target_force = float(np.clip(envelope_norm, 0.0, 1.0) * 100.0)
-        self.grip_force_n += (target_force - self.grip_force_n) * 0.15
+    def step(self, close_norm: float, open_norm: float) -> None:
+        net_command = float(np.clip(close_norm - open_norm, -1.0, 1.0))
+        target_force = float(np.clip(self.grip_force_n + net_command * 12.0, 0.0, 100.0))
+        self.grip_force_n += (target_force - self.grip_force_n) * 0.20
 
         if self.grip_force_n < 10:
             self.grip_label = "OPEN"
@@ -626,13 +719,25 @@ class DemoGripper:
 class PublicEngagementDashboard:
     """Live UI: scrolling stage plots + event monitor + gripper mockup."""
 
-    def __init__(self, cfg: DemoConfig, source: BaseSignalSource, source_name: str, ui_mode: str = "gripper"):
+    def __init__(
+        self,
+        cfg: DemoConfig,
+        source: BaseSignalSource,
+        source_name: str,
+        ui_mode: str = "gripper",
+        emulate_dual_delay: bool = False,
+        dual_delay_sec: float = 1.0,
+    ):
         self.cfg = cfg
         self.source = source
         self.source_name = source_name
         self.ui_mode = ui_mode
+        self.emulate_dual_delay = emulate_dual_delay
+        self.dual_delay_sec = max(0.0, float(dual_delay_sec))
 
         self.pipeline = StreamingEMGPipeline(cfg)
+        self.pipeline_side_a = StreamingEMGPipeline(cfg)
+        self.pipeline_side_b = StreamingEMGPipeline(cfg)
         self.events = EventDetector(cfg)
         self.gripper = DemoGripper()
 
@@ -647,17 +752,37 @@ class PublicEngagementDashboard:
             "lowpass": deque([0.0] * self.max_samples, maxlen=self.max_samples),
             "envelope": deque([0.0] * self.max_samples, maxlen=self.max_samples),
         }
+        self.side_a_envelope_hist: Deque[float] = deque([0.0] * self.max_samples, maxlen=self.max_samples)
+        self.side_b_envelope_hist: Deque[float] = deque([0.0] * self.max_samples, maxlen=self.max_samples)
+        self.side_a_level = 0.0
+        self.side_b_level = 0.0
+        self.cocontract_active = False
+        self.last_cocontract_time = -1e9
+        self.delay_samples = int(self.dual_delay_sec * self.cfg.sample_rate_hz) if self.emulate_dual_delay else 0
+        self.side_b_delay_buf: Deque[float] = deque([0.0] * self.delay_samples)
 
         self.session_t0 = time.perf_counter()
         self.last_frame_t = self.session_t0
-        self.event_log: Deque[str] = deque(maxlen=8)
+        self.event_log: Deque[str] = deque(maxlen=5 if ui_mode == "gripper" else 8)
         self.event_count = 0
         self.total_samples = 0
         self.recent_samples = 0
         self.recent_t0 = self.session_t0
         self.measured_rate_hz = 0.0
         self.paused = False
-        self.autoscale_enabled = False
+        self.autoscale_enabled = ui_mode == "gripper"
+        self.autoscale_alpha = 0.22
+        self.autoscale_state: Dict[str, Tuple[float, float]] = {}
+        self.calibration_active = False
+        self.calibration_duration_sec = 4.0
+        self.calibration_end_time = 0.0
+        self.calibration_a_samples: List[float] = []
+        self.calibration_b_samples: List[float] = []
+        self.calib_baseline_a = 0.0
+        self.calib_span_a = 0.10
+        self.calib_baseline_b = 0.0
+        self.calib_span_b = 0.10
+        self.has_calibration = False
 
         self.fig = None
         self.axes = {}
@@ -687,14 +812,68 @@ class PublicEngagementDashboard:
         }
         self.clarity_bar = None
         self.clarity_text_small = None
+        self.pause_button = None
+        self.calibrate_button = None
         self.event_times: Deque[float] = deque(maxlen=12)
         self.event_marker_artists: List = []
+        self.pad_bar_left = None
+        self.pad_bar_right = None
+        self.pad_value_text = None
+        self.improvement_history = {
+            "notch": deque(maxlen=20),
+            "bandpass": deque(maxlen=20),
+            "rectified": deque(maxlen=20),
+            "lowpass": deque(maxlen=20),
+            "envelope": deque(maxlen=20),
+        }
 
     def _norm_envelope(self) -> float:
         env = np.array(self.buffers["envelope"], dtype=np.float32)
         p95 = float(np.percentile(env, 95))
         ref = max(p95, 0.08)
         return float(np.clip(env[-1] / ref, 0.0, 1.0))
+
+    @staticmethod
+    def _norm_from_hist(history: Deque[float], latest: float) -> float:
+        arr = np.array(history, dtype=np.float32)
+        p95 = float(np.percentile(arr, 95))
+        ref = max(p95, 0.05)
+        return float(np.clip(latest / ref, 0.0, 1.0))
+
+    def _normalize_side(self, history: Deque[float], latest: float, side: str) -> float:
+        if self.has_calibration:
+            if side == "a":
+                baseline, span = self.calib_baseline_a, self.calib_span_a
+            else:
+                baseline, span = self.calib_baseline_b, self.calib_span_b
+            return float(np.clip((latest - baseline) / max(span, 1e-4), 0.0, 1.0))
+        return self._norm_from_hist(history, latest)
+
+    def _finish_calibration(self) -> None:
+        if len(self.calibration_a_samples) < 20 or len(self.calibration_b_samples) < 20:
+            self.calibration_active = False
+            if self.calibrate_button is not None:
+                self.calibrate_button.label.set_text("Calibrate")
+            self._append_event("Calibration failed: not enough samples")
+            return
+
+        a = np.array(self.calibration_a_samples, dtype=np.float32)
+        b = np.array(self.calibration_b_samples, dtype=np.float32)
+
+        self.calib_baseline_a = float(np.percentile(a, 20))
+        self.calib_baseline_b = float(np.percentile(b, 20))
+        a_high = float(np.percentile(a, 95))
+        b_high = float(np.percentile(b, 95))
+        self.calib_span_a = max(a_high - self.calib_baseline_a, 0.03)
+        self.calib_span_b = max(b_high - self.calib_baseline_b, 0.03)
+        self.has_calibration = True
+        self.calibration_active = False
+        if self.calibrate_button is not None:
+            self.calibrate_button.label.set_text("Calibrate")
+        self._append_event(
+            f"Calibrated | A base={self.calib_baseline_a:.3f} span={self.calib_span_a:.3f} | "
+            f"B base={self.calib_baseline_b:.3f} span={self.calib_span_b:.3f}"
+        )
 
     def _append_event(self, msg: str) -> None:
         t = time.perf_counter() - self.session_t0
@@ -793,22 +972,44 @@ class PublicEngagementDashboard:
     def _setup_gripper_panel(self, panel_ax) -> None:
         panel_ax.text(5, 9.65, "Public Engagement Control Panel", ha="center", va="center", fontsize=12, fontweight="bold")
 
-        panel_ax.text(1.0, 9.18, "Noise Reduction vs Raw (live)", fontsize=8.8, fontweight="bold")
+        panel_ax.text(1.0, 9.20, "Noise Reduction vs Raw (running avg)", fontsize=8.6, fontweight="bold")
         self.clarity_text = panel_ax.text(
             1.0,
             8.95,
             "(waiting for signal)",
-            fontsize=7.8,
+            fontsize=7.7,
             va="top",
             family="monospace",
         )
 
-        panel_ax.text(1.0, 7.60, "Signal Clarity", fontsize=8.8, fontweight="bold")
-        clarity_bg = patches.Rectangle((1.0, 7.26), 8.0, 0.28, facecolor="#E5E7EB", edgecolor="#9CA3AF")
+        panel_ax.text(1.0, 7.85, "Signal Clarity", fontsize=8.6, fontweight="bold")
+        clarity_bg = patches.Rectangle((1.0, 7.50), 8.0, 0.28, facecolor="#E5E7EB", edgecolor="#9CA3AF")
         panel_ax.add_patch(clarity_bg)
-        self.clarity_bar = patches.Rectangle((1.0, 7.26), 0.0, 0.28, facecolor="#22C55E", edgecolor="#22C55E")
+        self.clarity_bar = patches.Rectangle((1.0, 7.50), 0.0, 0.28, facecolor="#22C55E", edgecolor="#22C55E")
         panel_ax.add_patch(self.clarity_bar)
-        self.clarity_text_small = panel_ax.text(1.0, 6.97, "Clarity gain: +0.0%", fontsize=8.2)
+        self.clarity_text_small = panel_ax.text(1.0, 7.18, "Clarity gain (envelope): +0.0%", fontsize=8.0)
+
+        panel_ax.text(1.0, 6.92, "Pad Activity (Left closes | Right opens)", fontsize=8.4, fontweight="bold")
+        panel_ax.plot([5.0, 5.0], [6.38, 6.80], color="#6B7280", linewidth=1.3)
+        pad_bg_left = patches.Rectangle((1.0, 6.45), 4.0, 0.28, facecolor="#E5E7EB", edgecolor="#9CA3AF")
+        pad_bg_right = patches.Rectangle((5.0, 6.45), 4.0, 0.28, facecolor="#E5E7EB", edgecolor="#9CA3AF")
+        panel_ax.add_patch(pad_bg_left)
+        panel_ax.add_patch(pad_bg_right)
+        self.pad_bar_left = patches.Rectangle((5.0, 6.45), 0.0, 0.28, facecolor="#2563EB", edgecolor="#2563EB")
+        self.pad_bar_right = patches.Rectangle((5.0, 6.45), 0.0, 0.28, facecolor="#EF4444", edgecolor="#EF4444")
+        panel_ax.add_patch(self.pad_bar_left)
+        panel_ax.add_patch(self.pad_bar_right)
+        self.pad_value_text = panel_ax.text(1.0, 6.12, "Left: 0.00  Right: 0.00", fontsize=8.0)
+
+        ax_cal = self.fig.add_axes([0.755, 0.145, 0.095, 0.04])
+        ax_pause = self.fig.add_axes([0.865, 0.145, 0.095, 0.04])
+        btn_cal = Button(ax_cal, "Calibrate")
+        btn_pause = Button(ax_pause, "Pause")
+        btn_cal.on_clicked(self._on_start_calibration)
+        btn_pause.on_clicked(self._on_toggle_pause)
+        self.calibrate_button = btn_cal
+        self.pause_button = btn_pause
+        self.button_widgets = [btn_cal, btn_pause]
 
         palm = patches.Rectangle((2.2, 4.2), 5.6, 1.8, linewidth=1.5, edgecolor="#222", facecolor="#DDDDDD")
         panel_ax.add_patch(palm)
@@ -829,7 +1030,7 @@ class PublicEngagementDashboard:
 
         self.grip_text = panel_ax.text(1.0, 1.45, "Grip: OPEN", fontsize=10, fontweight="bold")
 
-        self.status_text = panel_ax.text(1.0, 0.95, "Source: starting...", fontsize=9)
+        self.status_text = panel_ax.text(1.0, 1.05, "Source: starting...", fontsize=8.8)
         self.event_text = panel_ax.text(1.0, 0.2, "Events:\n(boot)", fontsize=8, va="bottom", family="monospace")
 
     def _setup_debug_panel(self, panel_ax) -> None:
@@ -870,22 +1071,38 @@ class PublicEngagementDashboard:
         ax_reset = self.fig.add_axes([0.87, 0.20, 0.09, 0.04])
         ax_snap = self.fig.add_axes([0.77, 0.145, 0.09, 0.04])
         ax_scale = self.fig.add_axes([0.87, 0.145, 0.09, 0.04])
+        ax_cal = self.fig.add_axes([0.77, 0.09, 0.19, 0.04])
 
         btn_pause = Button(ax_pause, "Pause")
         btn_reset = Button(ax_reset, "Reset")
         btn_snap = Button(ax_snap, "Snapshot")
         btn_scale = Button(ax_scale, "AutoScale")
+        btn_cal = Button(ax_cal, "Calibrate")
 
         btn_pause.on_clicked(self._on_toggle_pause)
         btn_reset.on_clicked(self._on_reset_events)
         btn_snap.on_clicked(self._on_snapshot)
         btn_scale.on_clicked(self._on_toggle_autoscale)
+        btn_cal.on_clicked(self._on_start_calibration)
 
-        self.button_widgets = [btn_pause, btn_reset, btn_snap, btn_scale]
+        self.calibrate_button = btn_cal
+        self.pause_button = btn_pause
+        self.button_widgets = [btn_pause, btn_reset, btn_snap, btn_scale, btn_cal]
 
     def _on_toggle_pause(self, _event) -> None:
         self.paused = not self.paused
+        if self.pause_button is not None:
+            self.pause_button.label.set_text("Play" if self.paused else "Pause")
         self._append_event("Paused" if self.paused else "Resumed")
+
+    def _on_start_calibration(self, _event) -> None:
+        self.calibration_active = True
+        self.calibration_end_time = time.perf_counter() + self.calibration_duration_sec
+        self.calibration_a_samples = []
+        self.calibration_b_samples = []
+        if self.calibrate_button is not None:
+            self.calibrate_button.label.set_text("Calibrating...")
+        self._append_event("Calibration started (hold representative contractions for ~4s)")
 
     def _on_reset_events(self, _event) -> None:
         self.event_log.clear()
@@ -903,6 +1120,8 @@ class PublicEngagementDashboard:
 
     def _on_toggle_autoscale(self, _event) -> None:
         self.autoscale_enabled = not self.autoscale_enabled
+        if self.autoscale_enabled:
+            self.autoscale_state.clear()
         self._append_event("Autoscale ON" if self.autoscale_enabled else "Autoscale OFF")
 
     def _apply_autoscale_if_enabled(self) -> None:
@@ -918,8 +1137,21 @@ class PublicEngagementDashboard:
             if hi - lo < 1e-4:
                 hi = lo + 0.05
             margin = 0.08 * (hi - lo)
-            lower = max(0.0, lo - margin)
-            ax.set_ylim(lower, hi + margin)
+            target_lower = max(0.0, lo - margin)
+            target_upper = hi + margin
+
+            prev = self.autoscale_state.get(key)
+            if prev is None:
+                lower, upper = target_lower, target_upper
+            else:
+                lower = (1.0 - self.autoscale_alpha) * prev[0] + self.autoscale_alpha * target_lower
+                upper = (1.0 - self.autoscale_alpha) * prev[1] + self.autoscale_alpha * target_upper
+
+            if upper - lower < 1e-4:
+                upper = lower + 0.05
+
+            self.autoscale_state[key] = (lower, upper)
+            ax.set_ylim(lower, upper)
 
     def _noise_proxy(self, signal_data: np.ndarray) -> float:
         if signal_data.size < 3:
@@ -927,9 +1159,17 @@ class PublicEngagementDashboard:
         derivative = np.diff(signal_data)
         return float(np.mean(np.abs(derivative)) + 1e-6)
 
-    def _format_clarity_metrics(self) -> str:
+    def _format_clarity_metrics(self, improvements: Dict[str, float], compact: bool = False) -> str:
         abs_stage = {k: np.abs(np.array(self.buffers[k], dtype=np.float32)) for k in self.stage_keys}
         raw_noise = self._noise_proxy(abs_stage["raw"])
+
+        if compact:
+            return "\n".join([
+                f"Raw jitter        : {raw_noise:0.5f}",
+                f"Notch cleaner     : {improvements.get('notch', 0.0):+6.1f}%",
+                f"Bandpass cleaner  : {improvements.get('bandpass', 0.0):+6.1f}%",
+                f"Envelope cleaner  : {improvements.get('envelope', 0.0):+6.1f}%",
+            ])
 
         labels = {
             "notch": "Notch",
@@ -941,10 +1181,7 @@ class PublicEngagementDashboard:
 
         lines = [f"Raw jitter: {raw_noise:0.5f}"]
         for key in ["notch", "bandpass", "rectified", "lowpass", "envelope"]:
-            stage_noise = self._noise_proxy(abs_stage[key])
-            improvement = (1.0 - (stage_noise / raw_noise)) * 100.0
-            improvement = float(np.clip(improvement, -300.0, 100.0))
-            lines.append(f"{labels[key]:9s}: {improvement:+6.1f}%")
+            lines.append(f"{labels[key]:9s}: {improvements.get(key, 0.0):+6.1f}%")
 
         lines.append("(+ means cleaner than raw)")
         return "\n".join(lines)
@@ -956,7 +1193,9 @@ class PublicEngagementDashboard:
         for key in ["notch", "bandpass", "rectified", "lowpass", "envelope"]:
             stage_noise = self._noise_proxy(abs_stage[key])
             improvement = (1.0 - (stage_noise / raw_noise)) * 100.0
-            out[key] = float(np.clip(improvement, -300.0, 100.0))
+            clipped = float(np.clip(improvement, -300.0, 100.0))
+            self.improvement_history[key].append(clipped)
+            out[key] = float(np.mean(self.improvement_history[key]))
         return out
 
     def _draw_event_markers(self) -> None:
@@ -980,6 +1219,15 @@ class PublicEngagementDashboard:
     def _update_gripper_panel(self) -> None:
         if self.ui_mode != "gripper":
             return
+
+        if self.pad_bar_left is not None and self.pad_bar_right is not None and self.pad_value_text is not None:
+            left_w = 4.0 * float(np.clip(self.side_a_level, 0.0, 1.0))
+            right_w = 4.0 * float(np.clip(self.side_b_level, 0.0, 1.0))
+            self.pad_bar_left.set_x(5.0 - left_w)
+            self.pad_bar_left.set_width(left_w)
+            self.pad_bar_right.set_x(5.0)
+            self.pad_bar_right.set_width(right_w)
+            self.pad_value_text.set_text(f"Left: {self.side_a_level:0.2f}  Right: {self.side_b_level:0.2f}")
 
         for idx, rect in enumerate(self.finger_patches):
             flex = float(self.gripper.finger_positions[idx])
@@ -1005,9 +1253,9 @@ class PublicEngagementDashboard:
             return
 
         expected = max(1, int(self.cfg.sample_rate_hz * dt))
-        samples = self.source.read_available(max_samples=expected * 2)
+        samples_dual = self.source.read_available_dual(max_samples=expected * 2)
 
-        if len(samples) == 0:
+        if len(samples_dual) == 0:
             suffix = self._source_status_suffix()
             if suffix:
                 self.status_text.set_text(f"Source: {self.source_name} | waiting for samples... | {suffix}")
@@ -1015,8 +1263,8 @@ class PublicEngagementDashboard:
                 self.status_text.set_text(f"Source: {self.source_name} | waiting for samples...")
             return
 
-        self.total_samples += len(samples)
-        self.recent_samples += len(samples)
+        self.total_samples += len(samples_dual)
+        self.recent_samples += len(samples_dual)
 
         elapsed_rate_window = now - self.recent_t0
         if elapsed_rate_window >= 0.5:
@@ -1024,14 +1272,47 @@ class PublicEngagementDashboard:
             self.recent_samples = 0
             self.recent_t0 = now
 
-        for raw in samples[: expected * 2]:
-            out = self.pipeline.step(raw)
+        for side_a_raw, side_b_raw in samples_dual[: expected * 2]:
+            if self.delay_samples > 0:
+                self.side_b_delay_buf.append(float(side_b_raw))
+                side_b_raw = float(self.side_b_delay_buf.popleft())
+
+            side_sum = float(np.clip(side_a_raw + side_b_raw, 0.0, 3.3))
+
+            out = self.pipeline.step(side_sum)
+            out_a = self.pipeline_side_a.step(side_a_raw)
+            out_b = self.pipeline_side_b.step(side_b_raw)
+
             for key, value in out.items():
                 self.buffers[key].append(value)
 
+            self.side_a_envelope_hist.append(float(out_a["envelope"]))
+            self.side_b_envelope_hist.append(float(out_b["envelope"]))
+
+            if self.calibration_active:
+                self.calibration_a_samples.append(float(out_a["envelope"]))
+                self.calibration_b_samples.append(float(out_b["envelope"]))
+                if time.perf_counter() >= self.calibration_end_time:
+                    self._finish_calibration()
+
+            self.side_a_level = self._normalize_side(self.side_a_envelope_hist, float(out_a["envelope"]), "a")
+            self.side_b_level = self._normalize_side(self.side_b_envelope_hist, float(out_b["envelope"]), "b")
+
             env_n = self._norm_envelope()
             event_started, active = self.events.step(env_n, now - self.session_t0)
-            self.gripper.step(env_n)
+            self.gripper.step(self.side_a_level, self.side_b_level)
+
+            cocontract_now = (
+                self.side_a_level >= self.cfg.event_threshold_high
+                and self.side_b_level >= self.cfg.event_threshold_high
+            )
+            if cocontract_now and not self.cocontract_active:
+                if (now - self.session_t0) - self.last_cocontract_time >= self.cfg.min_event_interval_s:
+                    self.last_cocontract_time = now - self.session_t0
+                    self._append_event(
+                        f"Co-contraction event | L={self.side_a_level:.2f} R={self.side_b_level:.2f}"
+                    )
+            self.cocontract_active = cocontract_now
 
             if event_started:
                 self.event_count += 1
@@ -1043,11 +1324,11 @@ class PublicEngagementDashboard:
         suffix = self._source_status_suffix()
         if suffix:
             self.status_text.set_text(
-                f"Source: {self.source_name} | +{len(samples)} samples | rate~{self.measured_rate_hz:6.1f} Hz | {suffix}"
+                f"Source: {self.source_name} | +{len(samples_dual)} samples | rate~{self.measured_rate_hz:6.1f} Hz | {suffix}"
             )
         else:
             self.status_text.set_text(
-                f"Source: {self.source_name} | +{len(samples)} samples | rate~{self.measured_rate_hz:6.1f} Hz"
+                f"Source: {self.source_name} | +{len(samples_dual)} samples | rate~{self.measured_rate_hz:6.1f} Hz"
             )
 
     def _update_plot_lines(self) -> None:
@@ -1093,7 +1374,7 @@ class PublicEngagementDashboard:
         self.event_text.set_text("Events:\n" + event_body)
 
         if self.clarity_text is not None:
-            self.clarity_text.set_text(self._format_clarity_metrics())
+            self.clarity_text.set_text(self._format_clarity_metrics(improvements, compact=self.ui_mode == "gripper"))
 
         if self.ui_mode == "gripper" and self.clarity_bar is not None and self.clarity_text_small is not None:
             env_gain = float(np.clip(improvements.get("envelope", 0.0), -100.0, 100.0))
@@ -1121,6 +1402,10 @@ class PublicEngagementDashboard:
                     f"samples_total   : {self.total_samples}",
                     f"events_total    : {self.event_count}",
                     f"event_active    : {self.events.active}",
+                    f"co_contract     : {self.cocontract_active}",
+                    f"calibrated      : {self.has_calibration}",
+                    f"calibrating_now : {self.calibration_active}",
+                    f"dual_delay_sec  : {self.dual_delay_sec if self.emulate_dual_delay else 0.0:0.2f}",
                     f"thr_high_norm   : {self.cfg.event_threshold_high:0.3f}",
                     f"thr_low_norm    : {self.cfg.event_threshold_low:0.3f}",
                 ])
@@ -1135,6 +1420,8 @@ class PublicEngagementDashboard:
                     f"lowpass_v       : {last_vals['lowpass']:0.4f}",
                     f"envelope_v      : {last_vals['envelope']:0.4f}",
                     f"envelope_norm   : {env_norm:0.4f}",
+                    f"left_norm       : {self.side_a_level:0.4f}",
+                    f"right_norm      : {self.side_b_level:0.4f}",
                     f"grip_force_n    : {self.gripper.grip_force_n:0.2f}",
                     f"grip_label      : {self.gripper.grip_label}",
                 ])
@@ -1151,6 +1438,12 @@ class PublicEngagementDashboard:
         if self.ui_mode == "gripper":
             artists.extend(self.finger_patches)
             artists.extend([self.force_bar, self.grip_text])
+            if self.pad_bar_left is not None:
+                artists.append(self.pad_bar_left)
+            if self.pad_bar_right is not None:
+                artists.append(self.pad_bar_right)
+            if self.pad_value_text is not None:
+                artists.append(self.pad_value_text)
             if self.clarity_bar is not None:
                 artists.append(self.clarity_bar)
             if self.clarity_text_small is not None:
@@ -1234,6 +1527,8 @@ def build_source(args: argparse.Namespace, cfg: DemoConfig) -> Tuple[BaseSignalS
                 dataset_dir=dataset_dir,
                 dataset_source=args.dataset_source,
                 channel=args.dataset_channel,
+                side_a_channel=args.side_a_channel,
+                side_b_channel=args.side_b_channel,
                 replay_speed=args.replay_speed,
                 loop=args.replay_loop,
             )
@@ -1245,6 +1540,8 @@ def build_source(args: argparse.Namespace, cfg: DemoConfig) -> Tuple[BaseSignalS
                     dataset_dir=dataset_dir,
                     dataset_source=args.dataset_source,
                     channel=args.dataset_channel,
+                    side_a_channel=args.side_a_channel,
+                    side_b_channel=args.side_b_channel,
                     replay_speed=args.replay_speed,
                     loop=args.replay_loop,
                 ),
@@ -1277,8 +1574,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default=None, help="Base dataset directory (contains raw_signals/filtered_signals)")
     parser.add_argument("--dataset-source", choices=["raw", "filtered"], default="raw", help="Dataset subfolder for replay")
     parser.add_argument("--dataset-channel", default=None, help="Optional channel name or index for multichannel CSV replay")
+    parser.add_argument("--side-a-channel", default=None, help="Optional left/close channel name or index")
+    parser.add_argument("--side-b-channel", default=None, help="Optional right/open channel name or index")
     parser.add_argument("--replay-speed", type=float, default=1.0, help="Dataset replay speed multiplier")
     parser.add_argument("--replay-loop", action="store_true", help="Loop dataset files when replay reaches end")
+    parser.add_argument("--emulate-dual-delay", action="store_true", help="Emulate dual-pad timing by delaying side B")
+    parser.add_argument("--dual-delay-sec", type=float, default=1.0, help="Delay to apply to side B in emulation mode")
 
     parser.add_argument("--sample-rate", type=int, default=1000, help="Pipeline sample rate")
     parser.add_argument("--view-seconds", type=float, default=8.0, help="Visible scrolling window")
@@ -1302,7 +1603,14 @@ def main() -> None:
     )
 
     source, source_name = build_source(args, cfg)
-    dashboard = PublicEngagementDashboard(cfg, source, source_name, ui_mode=args.ui_mode)
+    dashboard = PublicEngagementDashboard(
+        cfg,
+        source,
+        source_name,
+        ui_mode=args.ui_mode,
+        emulate_dual_delay=args.emulate_dual_delay,
+        dual_delay_sec=args.dual_delay_sec,
+    )
     dashboard.run()
 
 
