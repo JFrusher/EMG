@@ -3,3 +3,4 @@ scipy>=1.10
 matplotlib>=3.7
 pandas>=2.0
 pyserial>=3.5
+bleak>=0.22

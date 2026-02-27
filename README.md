@@ -19,6 +19,7 @@ This repository is ready for local experimentation, demos, and dissertation/rese
 - `frequency_analyzer.py` — FFT/PSD analysis and frequency-response plotting.
 - `digital_twin_gripper.py` — Gripper simulation and visualization dashboard.
 - `emg_filters.py` — Reusable filter presets (`default`, `aggressive`, `balanced`, etc.).
+- `public_engagement_demo.py` — Real-time public demo UI (BLE/Serial/Synthetic, scrolling multi-stage plots, events, and gripper mockup).
 
 ### Firmware
 - `myoware_acquisition.ino` — ESP32 firmware for 1 kHz EMG acquisition and serial CSV streaming.
@@ -32,6 +33,7 @@ This repository is ready for local experimentation, demos, and dissertation/rese
 - `docs/EMG_Setup_Guide.md` — Hardware setup and troubleshooting.
 - `docs/TESTING_GUIDE.md` — Validation/testing procedures.
 - `docs/Guidance.md` and `docs/COMPLETE SYSTEM SUMMARY.md` — Extended reference notes.
+- `docs/PUBLIC_DEMO_GUIDE.md` — Operator guide for live public engagement sessions.
 - `CONTRIBUTING.md` — Contribution workflow and pre-PR validation.
 
 ---
@@ -100,6 +102,59 @@ python main_pipeline.py --mode load --volunteer 1 --dataset-source raw --preset 
 ```bash
 python main_pipeline.py --mode live --port COM3 --duration 10 --preset balanced
 ```
+
+### 5) Public engagement live demonstrator (recommended for demos)
+
+One-click launchers (Windows):
+
+- `run_demo.bat` → default safe launcher (synthetic + gripper UI)
+- `run_demo_emulated.bat` → dataset replay loop + gripper UI
+- `run_demo_debug.bat` → dataset replay loop + debug UI (numeric telemetry + controls)
+
+Synthetic fallback demo (always works):
+
+```bash
+python public_engagement_demo.py --source synthetic --ui-mode gripper
+```
+
+Serial demo (ESP32 via USB):
+
+```bash
+python public_engagement_demo.py --source serial --port COM3 --baud 921600 --ui-mode gripper
+```
+
+BLE demo (dry EMG wearable):
+
+```bash
+python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char 0000ffe1-0000-1000-8000-00805f9b34fb --ui-mode gripper
+```
+
+Dataset replay demo (sequentially plays all dataset files as pseudo-live input):
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --replay-speed 1.0 --ui-mode gripper
+```
+
+Loop continuously for exhibition use:
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --replay-speed 1.0 --replay-loop --ui-mode gripper
+```
+
+Debug console mode (replaces gripper panel with live numeric telemetry + control buttons):
+
+```bash
+python public_engagement_demo.py --source dataset --dataset-source raw --replay-loop --ui-mode debug
+```
+
+Behavior notes:
+- If BLE/Serial cannot initialize, demo auto-falls back to synthetic input by default.
+- Dataset source replays CSV files sequentially from `EMGdataset/dataset/raw_signals` or `filtered_signals`.
+- Use `--strict-source` to fail fast instead of falling back.
+- `--ui-mode gripper` shows the gripper panel; `--ui-mode debug` swaps in a live debug console.
+- Debug mode includes interactive buttons: Pause/Resume, Reset events, Snapshot, and AutoScale.
+- The live UI always keeps scrolling stage plots from raw signal to final envelope.
+- A live "Noise Reduction vs Raw" panel quantifies stage-by-stage cleaning using a jitter/noise proxy, making filter benefit explicit for viewers.
 
 ---
 
