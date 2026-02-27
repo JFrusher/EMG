@@ -1,0 +1,77 @@
+# =========================
+# Python bytecode / caches
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Build / packaging
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Tooling caches
+# =========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# =========================
+# IDE / editor files
+# =========================
+.vscode/
+.idea/
+.history/
+*.code-workspace
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+
+# =========================
+# OS artifacts
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# =========================
+# Project-generated outputs
+# =========================
+results/
+*.log
+*.tmp
+
+# =========================
+# Local runtime/config files
+# =========================
+.env
+.env.*
+*.local
+*.zip
+
+# =========================
+# Serial capture / ad-hoc data dumps
+# =========================
+*.csv.bak
+*_capture.csv
+*_recording.csv
