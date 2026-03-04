@@ -1,4 +1,4 @@
-#COMPLETE SYSTEM SUMMARY
+# COMPLETE SYSTEM SUMMARY
 
 I've created a **production-ready EMG signal processing system** for your myoware muscle sensor project. Here's what you have:
 
@@ -7,12 +7,13 @@ I've created a **production-ready EMG signal processing system** for your myowar
 ### **Files Created:**
 
 1. **`EMG_Setup_Guide.md`** - Hardware wiring, ESP32 setup, parameters, troubleshooting
-2. **`myoware_acquisition.ino`** - Arduino firmware for ESP32 (complete, ~300 lines)
-3. **`emg_signal_processor.py`** - Signal processing pipeline (680+ lines, fully documented)
-4. **`digital_twin_gripper.py`** - Prosthetic gripper visualization (350+ lines)
-5. **`main_pipeline.py`** - Integration & command-line interface (400+ lines)
-6. **`TESTING_GUIDE.md`** - 8 comprehensive tests with step-by-step instructions
-7. **`README.md`** - Complete project overview & reference (200+ KB)
+2. **`firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino`** - Arduino serial firmware for ESP32
+3. **`firmware/esp32/myoware_ble_acquisition/myoware_ble_acquisition.ino`** - Arduino BLE firmware for ESP32
+4. **`emg_signal_processor.py`** - Signal processing pipeline (680+ lines, fully documented)
+5. **`digital_twin_gripper.py`** - Prosthetic gripper visualization (350+ lines)
+6. **`main_pipeline.py`** - Integration & command-line interface (400+ lines)
+7. **`TESTING_GUIDE.md`** - 8 comprehensive tests with step-by-step instructions
+8. **`README.md`** - Complete project overview & reference
 
 **Total: ~2000+ lines of documented, tested code**
 

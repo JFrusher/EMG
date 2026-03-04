@@ -29,6 +29,15 @@ Windows one-click launchers:
 - `run_demo.bat` (synthetic + gripper UI)
 - `run_demo_emulated.bat` (dataset replay loop + gripper UI)
 - `run_demo_debug.bat` (dataset replay loop + debug UI)
+- `run_demo_ble_auto.bat` (BLE-first with auto setup + synthetic fallback)
+
+BLE one-time setup helper:
+
+```bash
+python ble_demo_setup.py --ble-device-name MYOWARE --config demo_ble_config.json
+```
+
+This validates that BLE notifications are arriving and stores connection settings for repeat sessions.
 
 ### Synthetic mode (safe default)
 
@@ -45,7 +54,13 @@ python public_engagement_demo.py --source serial --port COM3 --baud 921600
 ### BLE mode (dry EMG wearable)
 
 ```bash
-python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char 0000ffe1-0000-1000-8000-00805f9b34fb
+python public_engagement_demo.py --source ble
+```
+
+Optional explicit BLE params:
+
+```bash
+python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char beb5483e-36e1-4688-b7f5-ea07361b26a8 --ble-device-name MYOWARE
 ```
 
 ### Dataset replay mode (live emulation)
@@ -109,6 +124,7 @@ Notes:
 ## Fallback Strategy
 
 - Default behavior: if BLE or Serial cannot initialize, the app falls back to synthetic mode.
+- BLE also auto-recovers from dropped links and stalled notifications using reconnect backoff + stream watchdog.
 - Use strict mode to force the selected source:
 
 ```bash

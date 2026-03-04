@@ -55,6 +55,33 @@ SIG (White)     →      GPIO 34 (ADC1_CH6) or any ADC pin
 - **Buffer Size**: 5000 samples per transmission (~5 seconds)
 - **Serial Baud Rate**: 921600 (high-speed for data streaming)
 
+### 2.4 BLE Firmware Option (Recommended for public demos)
+
+Use `firmware/esp32/myoware_ble_acquisition/myoware_ble_acquisition.ino` for wireless mode.
+
+- Device name: `MYOWARE_EMG`
+- Service UUID: `4fafc201-1fb5-459e-8fcc-c5c9c331914b`
+- Notify characteristic UUID: `beb5483e-36e1-4688-b7f5-ea07361b26a8`
+- Notification payload: packed little-endian `uint16` ADC samples (0..4095)
+
+Laptop setup/validation command:
+
+```bash
+python ble_demo_setup.py --ble-device-name MYOWARE --config demo_ble_config.json
+```
+
+Demo startup command:
+
+```bash
+python public_engagement_demo.py --source ble --ble-config demo_ble_config.json
+```
+
+Windows one-click BLE launcher:
+
+```bash
+scripts/windows/run_demo_ble_auto.bat
+```
+
 ### 2.3 Data Format
 Raw data transmitted as CSV to serial port:
 ```
@@ -173,21 +200,23 @@ Peak = max(signal)           // Peak amplitude
 ## Part 5: File Structure
 
 ```
-emg_project/
-├── esp32_firmware/
-│   └── myoware_acquisition.ino
-├── python_processing/
-│   ├── emg_data_recorder.py
-│   ├── emg_signal_processor.py
-│   ├── emg_visualizer.py
-│   ├── digital_twin_gripper.py
-│   └── main_pipeline.py
-├── sample_data/
-│   ├── raw_emg_data.csv
-│   └── reference_signals.npy
-├── test_data/
-│   ├── synthetic_emg.csv
-│   └── function_generator_test.csv
+EMG/
+├── firmware/
+│   └── esp32/
+│      ├── myoware_serial_acquisition/
+│      │  └── myoware_serial_acquisition.ino
+│      └── myoware_ble_acquisition/
+│         └── myoware_ble_acquisition.ino
+├── scripts/
+│   └── windows/
+│      ├── run_demo.bat
+│      ├── run_demo_emulated.bat
+│      ├── run_demo_debug.bat
+│      └── run_demo_ble_auto.bat
+├── docs/
+├── EMGdataset/
+├── public_engagement_demo.py
+├── main_pipeline.py
 └── README.md
 ```
 

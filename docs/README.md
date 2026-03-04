@@ -33,11 +33,16 @@ Muscle activity     values at 1kHz           - SNR analysis
 ## 📦 What's Included
 
 ### Hardware Files
-- **`myoware_acquisition.ino`**: Arduino firmware for ESP32
+- **`firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino`**: Arduino serial firmware for ESP32
+   - Configurable sampling rate (1000 Hz default)
+   - High-speed serial output (921600 baud)
+   - Buffered transmission every 5 seconds
+   - Complete with error handling and documentation
+- **`firmware/esp32/myoware_ble_acquisition/myoware_ble_acquisition.ino`**: Arduino BLE firmware for ESP32
   - Configurable sampling rate (1000 Hz default)
-  - High-speed serial output (921600 baud)
-  - Buffered transmission every 5 seconds
-  - Complete with error handling and documentation
+   - BLE notification output with reconnect-safe behavior
+   - Device/service/characteristic UUID-based discovery
+   - Designed for public-demo wireless operation
 
 ### Python Processing Modules
 - **`emg_signal_processor.py`**: Core signal processing (680+ lines)

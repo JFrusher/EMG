@@ -7,7 +7,7 @@
 - [ ] Wire MyoWare to ESP32 (VCC→3.3V, GND→GND, SIG→GPIO34)
 - [ ] Verify wiring with multimeter
 - [ ] Install Arduino IDE + ESP32 board support
-- [ ] Upload `myoware_acquisition.ino` to ESP32
+- [ ] Upload `firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` to ESP32
 - [ ] Verify serial output in Arduino IDE Serial Monitor at 921600 baud
 
 ### Software Setup (Day 2)
@@ -120,7 +120,7 @@ Butterworth filter pole radius: 0.9870
 
 **Prerequisites**:
 - Arduino IDE installed with ESP32 board support
-- `myoware_acquisition.ino` uploaded to ESP32
+- `firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` uploaded to ESP32
 - USB cable connected to computer
 
 ```bash
@@ -168,7 +168,7 @@ Garbage characters in output
 
 **Verify Firmware**:
 ```cpp
-// In myoware_acquisition.ino, verify this line:
+// In firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino, verify this line:
 const long SERIAL_BAUD = 921600;
 
 // And this line in setup():
@@ -479,7 +479,7 @@ python main_pipeline.py --test serial
 
 ```
 emg_project/
-├── myoware_acquisition.ino         # Arduino sketch
+├── firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino  # Arduino sketch
 ├── emg_signal_processor.py          # Main processing module
 ├── digital_twin_gripper.py          # Gripper visualization
 ├── main_pipeline.py                 # Integration script

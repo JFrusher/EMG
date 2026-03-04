@@ -26,7 +26,7 @@
 // ============================================================================
 // CONFIGURATION PARAMETERS
 // ============================================================================
-* TODO add the other input pins
+// TODO: add optional secondary input pin mapping when dual-pad serial mode is required.
 const int ADC_PIN = 34;                    // GPIO34 = ADC1_CH6 (recommended)
 const int SAMPLING_RATE_HZ = 1000;         // 1000 samples per second
 const int SAMPLING_PERIOD_MS = 1;          // 1 millisecond between samples

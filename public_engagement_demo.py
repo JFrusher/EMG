@@ -31,6 +31,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import queue
@@ -169,12 +170,60 @@ class SyntheticEMGSource(BaseSignalSource):
 class SerialEMGSource(BaseSignalSource):
     """Serial source reading ESP32 CSV lines: timestamp_ms,adc_raw_value"""
 
-    def __init__(self, sample_rate_hz: int, port: str, baud: int = 921600):
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        port: str,
+        baud: int = 921600,
+        reconnect_backoff_s: float = 1.0,
+        max_reconnect_backoff_s: float = 8.0,
+        data_timeout_s: float = 4.0,
+    ):
         super().__init__(sample_rate_hz)
         self.port = port
         self.baud = baud
         self._serial = None
         self._running = False
+        self.reconnect_backoff_s = max(0.3, float(reconnect_backoff_s))
+        self.max_reconnect_backoff_s = max(self.reconnect_backoff_s, float(max_reconnect_backoff_s))
+        self.data_timeout_s = max(0.5, float(data_timeout_s))
+        self._next_reconnect_monotonic = 0.0
+        self._reconnect_delay_s = self.reconnect_backoff_s
+        self._last_data_monotonic = 0.0
+        self._reconnect_attempts = 0
+        self._last_error = ""
+
+    def _open_serial(self) -> None:
+        import serial
+        self._serial = serial.Serial(self.port, self.baud, timeout=0)
+        self._reconnect_delay_s = self.reconnect_backoff_s
+        self._next_reconnect_monotonic = 0.0
+        self._last_data_monotonic = time.monotonic()
+
+    def _close_serial(self) -> None:
+        if self._serial is not None:
+            try:
+                self._serial.close()
+            except Exception:
+                pass
+        self._serial = None
+
+    def _schedule_reconnect(self, err: Optional[str] = None) -> None:
+        self._close_serial()
+        self._reconnect_attempts += 1
+        if err:
+            self._last_error = err
+        self._next_reconnect_monotonic = time.monotonic() + self._reconnect_delay_s
+        self._reconnect_delay_s = min(self.max_reconnect_backoff_s, self._reconnect_delay_s * 1.7)
+
+    def status_summary(self) -> str:
+        state = "connected" if self._serial is not None else "reconnecting"
+        msg = (
+            f"state={state} | port={self.port} | attempts={self._reconnect_attempts}"
+        )
+        if self._last_error:
+            msg += f" | last={self._last_error[:48]}"
+        return msg
 
     def start(self) -> None:
         try:
@@ -182,17 +231,12 @@ class SerialEMGSource(BaseSignalSource):
         except ImportError as exc:
             raise RuntimeError("pyserial is required for serial source") from exc
 
-        self._serial = serial.Serial(self.port, self.baud, timeout=0)
+        self._open_serial()
         self._running = True
 
     def stop(self) -> None:
         self._running = False
-        if self._serial is not None:
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-        self._serial = None
+        self._close_serial()
 
     @staticmethod
     def _to_voltage(value: float) -> float:
@@ -226,14 +270,30 @@ class SerialEMGSource(BaseSignalSource):
         return self._to_voltage(nums[-2]), self._to_voltage(nums[-1])
 
     def read_available_dual(self, max_samples: int) -> List[DualSample]:
-        if not self._running or self._serial is None or max_samples <= 0:
+        if not self._running or max_samples <= 0:
+            return []
+
+        now = time.monotonic()
+
+        if self._serial is None:
+            if now < self._next_reconnect_monotonic:
+                return []
+            try:
+                self._open_serial()
+            except Exception as exc:
+                self._schedule_reconnect(str(exc) or exc.__class__.__name__)
+                return []
+
+        serial_handle = self._serial
+        if serial_handle is None:
             return []
 
         samples: List[DualSample] = []
         for _ in range(max_samples):
             try:
-                raw = self._serial.readline()
-            except Exception:
+                raw = serial_handle.readline()
+            except Exception as exc:
+                self._schedule_reconnect(str(exc) or exc.__class__.__name__)
                 break
             if not raw:
                 break
@@ -246,6 +306,10 @@ class SerialEMGSource(BaseSignalSource):
             value = self._decode_line(line)
             if value is not None:
                 samples.append(value)
+                self._last_data_monotonic = now
+
+        if self._serial is not None and (now - self._last_data_monotonic) > self.data_timeout_s:
+            self._schedule_reconnect("serial data timeout")
 
         return samples
 
@@ -448,14 +512,75 @@ class BLEEMGSource(BaseSignalSource):
     - UTF-8 CSV text lines, where the last field is interpreted as ADC-like value
     """
 
-    def __init__(self, sample_rate_hz: int, address: str, char_uuid: str):
+    DEFAULT_CHAR_CANDIDATES = [
+        "beb5483e-36e1-4688-b7f5-ea07361b26a8",
+        "0000ffe1-0000-1000-8000-00805f9b34fb",
+        "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+    ]
+
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        address: Optional[str],
+        char_uuid: Optional[str],
+        device_name: Optional[str] = None,
+        service_uuid: Optional[str] = None,
+        scan_timeout_s: float = 6.0,
+        reconnect_backoff_s: float = 1.0,
+        max_reconnect_backoff_s: float = 8.0,
+        data_timeout_s: float = 3.0,
+    ):
         super().__init__(sample_rate_hz)
         self.address = address
         self.char_uuid = char_uuid
+        self.device_name = device_name
+        self.service_uuid = service_uuid
+        self.scan_timeout_s = max(1.0, float(scan_timeout_s))
+        self.reconnect_backoff_s = max(0.3, float(reconnect_backoff_s))
+        self.max_reconnect_backoff_s = max(self.reconnect_backoff_s, float(max_reconnect_backoff_s))
+        self.data_timeout_s = max(0.5, float(data_timeout_s))
+
         self._running = False
         self._queue: "queue.Queue[DualSample]" = queue.Queue(maxsize=20000)
         self._loop_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._status_lock = threading.Lock()
+        self._status = "idle"
+        self._last_error = ""
+        self._connect_attempts = 0
+        self._reconnects = 0
+        self._resolved_address = self.address
+        self._resolved_char_uuid = self.char_uuid
+        self._resolved_name = self.device_name
+        self._last_rx_monotonic = 0.0
+
+    @property
+    def resolved_address(self) -> Optional[str]:
+        return self._resolved_address
+
+    @property
+    def resolved_char_uuid(self) -> Optional[str]:
+        return self._resolved_char_uuid
+
+    def status_summary(self) -> str:
+        with self._status_lock:
+            msg = (
+                f"state={self._status} | q={self._queue.qsize()} | "
+                f"attempts={self._connect_attempts} | reconnects={self._reconnects}"
+            )
+            if self._resolved_name:
+                msg += f" | dev={self._resolved_name}"
+            if self._resolved_address:
+                msg += f" | addr={self._resolved_address}"
+            if self._last_error:
+                msg += f" | last={self._last_error[:48]}"
+            return msg
+
+    def _set_status(self, status: str, error: Optional[str] = None) -> None:
+        with self._status_lock:
+            self._status = status
+            if error is not None:
+                self._last_error = error
 
     def start(self) -> None:
         try:
@@ -465,6 +590,8 @@ class BLEEMGSource(BaseSignalSource):
 
         self._running = True
         self._stop_evt.clear()
+        self._set_status("starting")
+        self._last_rx_monotonic = time.monotonic()
         self._loop_thread = threading.Thread(target=self._run_ble_loop, daemon=True)
         self._loop_thread.start()
 
@@ -474,6 +601,7 @@ class BLEEMGSource(BaseSignalSource):
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=2.0)
         self._loop_thread = None
+        self._set_status("stopped")
 
     def read_available_dual(self, max_samples: int) -> List[DualSample]:
         if not self._running or max_samples <= 0:
@@ -511,6 +639,28 @@ class BLEEMGSource(BaseSignalSource):
     def _parse_payload(self, payload: bytes) -> List[DualSample]:
         if not payload:
             return []
+
+        if len(payload) % 4 == 0:
+            try:
+                u16_vals = np.frombuffer(payload, dtype="<u2")
+                if u16_vals.size > 0 and int(np.max(u16_vals)) <= 4095:
+                    pairs = u16_vals.reshape(-1, 2).astype(np.float32)
+                    scaled = (pairs / 4095.0) * 3.3
+                    return [
+                        (float(np.clip(a, 0.0, 3.3)), float(np.clip(b, 0.0, 3.3)))
+                        for a, b in scaled
+                    ]
+            except Exception:
+                pass
+
+        if len(payload) % 2 == 0:
+            try:
+                u16_vals = np.frombuffer(payload, dtype="<u2")
+                if u16_vals.size > 0 and int(np.max(u16_vals)) <= 4095:
+                    scaled = (u16_vals.astype(np.float32) / 4095.0) * 3.3
+                    return [(float(np.clip(v, 0.0, 3.3)), 0.0) for v in scaled]
+            except Exception:
+                pass
 
         if len(payload) % 4 == 0:
             try:
@@ -563,28 +713,129 @@ class BLEEMGSource(BaseSignalSource):
 
     def _run_ble_loop(self) -> None:
         import asyncio
-        from bleak import BleakClient
+        import bleak
+
+        async def _resolve_device_and_char() -> Tuple[str, str, Optional[str]]:
+            target_device = None
+            devices = await bleak.BleakScanner.discover(timeout=self.scan_timeout_s)
+
+            if self.address:
+                target_address = self.address.strip().lower()
+                for device in devices:
+                    if (getattr(device, "address", "") or "").strip().lower() == target_address:
+                        target_device = device
+                        break
+                if target_device is None:
+                    raise RuntimeError(f"BLE device {self.address} not found during scan")
+            else:
+                name_hint = (self.device_name or "MYOWARE").strip().lower()
+                for device in devices:
+                    device_name = (getattr(device, "name", None) or "").strip().lower()
+                    if name_hint in device_name:
+                        target_device = device
+                        break
+
+                if target_device is None and self.service_uuid:
+                    svc = self.service_uuid.strip().lower()
+                    for device in devices:
+                        uuids = [u.lower() for u in (getattr(device, "metadata", {}).get("uuids") or [])]
+                        if svc in uuids:
+                            target_device = device
+                            break
+
+                if target_device is None and devices:
+                    target_device = devices[0]
+
+                if target_device is None:
+                    raise RuntimeError("No BLE devices discovered")
+
+            resolved_address = str(getattr(target_device, "address", "")).strip()
+            resolved_name = getattr(target_device, "name", None)
+            if not resolved_address:
+                raise RuntimeError("Discovered BLE device has no address")
+
+            chosen_char = self.char_uuid.strip().lower() if self.char_uuid else ""
+            async with bleak.BleakClient(resolved_address, timeout=8.0) as probe_client:
+                services = await probe_client.get_services()
+                chars = []
+                for service in services:
+                    if self.service_uuid and str(service.uuid).lower() != self.service_uuid.strip().lower():
+                        continue
+                    for ch in service.characteristics:
+                        chars.append(ch)
+
+                if not chosen_char:
+                    candidates = [c.lower() for c in self.DEFAULT_CHAR_CANDIDATES]
+                    for ch in chars:
+                        props = {p.lower() for p in (ch.properties or [])}
+                        if "notify" in props and str(ch.uuid).lower() in candidates:
+                            chosen_char = str(ch.uuid).lower()
+                            break
+                    if not chosen_char:
+                        for ch in chars:
+                            props = {p.lower() for p in (ch.properties or [])}
+                            if "notify" in props:
+                                chosen_char = str(ch.uuid).lower()
+                                break
+
+                if not chosen_char:
+                    raise RuntimeError("No notifiable BLE characteristic found")
+
+            return resolved_address, chosen_char, resolved_name
 
         async def _runner() -> None:
+            backoff = self.reconnect_backoff_s
             while not self._stop_evt.is_set():
                 try:
-                    async with BleakClient(self.address, timeout=8.0) as client:
-                        async def _on_notify(_: int, data: bytearray) -> None:
+                    self._connect_attempts += 1
+                    self._set_status("scanning")
+                    resolved_address, chosen_char, resolved_name = await _resolve_device_and_char()
+                    self._resolved_address = resolved_address
+                    self._resolved_char_uuid = chosen_char
+                    self._resolved_name = resolved_name
+
+                    self._set_status("connecting")
+                    async with bleak.BleakClient(resolved_address, timeout=8.0) as client:
+                        if not client.is_connected:
+                            raise RuntimeError("BLE client failed to connect")
+
+                        self._set_status("connected")
+                        self._last_rx_monotonic = time.monotonic()
+
+                        def _on_notify(_: int, data: bytearray) -> None:
                             parsed = self._parse_payload(bytes(data))
                             for value in parsed:
                                 self._push(value)
+                            if parsed:
+                                self._last_rx_monotonic = time.monotonic()
 
-                        await client.start_notify(self.char_uuid, _on_notify)
+                        await client.start_notify(chosen_char, _on_notify)
                         while not self._stop_evt.is_set() and client.is_connected:
+                            if (time.monotonic() - self._last_rx_monotonic) > self.data_timeout_s:
+                                raise RuntimeError("BLE stream timeout (no notifications)")
                             await asyncio.sleep(0.05)
 
-                except Exception:
-                    await asyncio.sleep(1.0)
+                        try:
+                            await client.stop_notify(chosen_char)
+                        except Exception:
+                            pass
+
+                    backoff = self.reconnect_backoff_s
+
+                except Exception as exc:
+                    self._reconnects += 1
+                    err = str(exc) or exc.__class__.__name__
+                    self._set_status("reconnecting", error=err)
+                    await asyncio.sleep(backoff)
+                    backoff = min(self.max_reconnect_backoff_s, backoff * 1.7)
+
+            self._set_status("stopping")
 
         try:
             asyncio.run(_runner())
         except Exception:
             self._running = False
+            self._set_status("error", error="BLE event loop crashed")
 
 
 # =============================================================================
@@ -837,6 +1088,16 @@ class PublicEngagementDashboard:
             "envelope": 0.0,
         }
 
+        self.runtime_recovery_enabled = True
+        self.source_stall_timeout_s = 6.0
+        self.source_restart_cooldown_s = 4.0
+        self.source_max_restarts = 5
+        self._last_sample_monotonic = self.session_t0
+        self._last_restart_monotonic = 0.0
+        self._source_restart_count = 0
+        self._failover_active = False
+        self._engine_error_count = 0
+
     def _norm_envelope(self) -> float:
         env = np.array(self.buffers["envelope"], dtype=np.float32)
         p95 = float(np.percentile(env, 95))
@@ -893,8 +1154,59 @@ class PublicEngagementDashboard:
         if isinstance(self.source, DatasetReplaySource):
             return self.source.status_summary()
         if isinstance(self.source, BLEEMGSource):
-            return f"BLE queue={self.source._queue.qsize()}"
+            return self.source.status_summary()
+        if isinstance(self.source, SerialEMGSource):
+            return self.source.status_summary()
         return ""
+
+    def _safe_start_source(self) -> bool:
+        try:
+            self.source.start()
+            return True
+        except Exception as exc:
+            self._append_event(f"Source start failed: {exc}")
+            return False
+
+    def _safe_stop_source(self) -> None:
+        try:
+            self.source.stop()
+        except Exception as exc:
+            self._append_event(f"Source stop warning: {exc}")
+
+    def _activate_synthetic_failover(self, reason: str) -> None:
+        if isinstance(self.source, SyntheticEMGSource):
+            return
+        self._safe_stop_source()
+        self.source = SyntheticEMGSource(self.cfg.sample_rate_hz)
+        self.source_name = "Synthetic Emergency Fallback"
+        self._failover_active = True
+        if self._safe_start_source():
+            self._append_event(f"Emergency failover active: {reason}")
+        else:
+            self._append_event(f"Emergency failover failed: {reason}")
+
+    def _restart_live_source(self, reason: str) -> None:
+        if not self.runtime_recovery_enabled:
+            return
+        if isinstance(self.source, SyntheticEMGSource):
+            return
+
+        now = time.perf_counter()
+        if (now - self._last_restart_monotonic) < self.source_restart_cooldown_s:
+            return
+
+        self._last_restart_monotonic = now
+        self._source_restart_count += 1
+        self._append_event(f"Source recovery {self._source_restart_count}: {reason}")
+
+        self._safe_stop_source()
+        if self._safe_start_source():
+            self._append_event("Source recovered")
+            self._last_sample_monotonic = time.perf_counter()
+            return
+
+        if self._source_restart_count >= self.source_max_restarts:
+            self._activate_synthetic_failover("max source recovery attempts reached")
 
     def _setup_figure(self) -> None:
         self.fig = plt.figure(figsize=(16, 10))
@@ -1133,8 +1445,11 @@ class PublicEngagementDashboard:
         Path("results").mkdir(exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = Path("results") / f"public_demo_snapshot_{ts}.png"
-        self.fig.savefig(out, dpi=130)
-        self._append_event(f"Snapshot saved: {out.name}")
+        try:
+            self.fig.savefig(out, dpi=130)
+            self._append_event(f"Snapshot saved: {out.name}")
+        except Exception as exc:
+            self._append_event(f"Snapshot failed: {exc}")
 
     def _on_toggle_autoscale(self, _event) -> None:
         self.autoscale_enabled = not self.autoscale_enabled
@@ -1273,15 +1588,25 @@ class PublicEngagementDashboard:
 
         expected = max(1, int(self.cfg.sample_rate_hz * dt))
         expected = min(expected, int(self.cfg.sample_rate_hz * 0.12))
-        samples_dual = self.source.read_available_dual(max_samples=expected * 2)
+        try:
+            samples_dual = self.source.read_available_dual(max_samples=expected * 2)
+        except Exception as exc:
+            self._append_event(f"Read error: {exc}")
+            self._restart_live_source("read exception")
+            return
 
         if len(samples_dual) == 0:
+            if (now - self._last_sample_monotonic) > self.source_stall_timeout_s:
+                self._append_event("Source stall detected")
+                self._restart_live_source("sample timeout")
             suffix = self._source_status_suffix()
             if suffix:
                 self.status_text.set_text(f"Source: {self.source_name} | waiting for samples... | {suffix}")
             else:
                 self.status_text.set_text(f"Source: {self.source_name} | waiting for samples...")
             return
+
+        self._last_sample_monotonic = now
 
         self.total_samples += len(samples_dual)
         self.recent_samples += len(samples_dual)
@@ -1440,9 +1765,17 @@ class PublicEngagementDashboard:
             )
 
     def _animate(self, _frame: int):
-        self._step_engine()
-        self._update_plot_lines()
-        self._update_gripper_panel()
+        try:
+            self._step_engine()
+            self._update_plot_lines()
+            self._update_gripper_panel()
+            self._engine_error_count = 0
+        except Exception as exc:
+            self._engine_error_count += 1
+            self._append_event(f"Engine error #{self._engine_error_count}: {exc}")
+            self._restart_live_source("engine exception")
+            if self._engine_error_count >= 3:
+                self._activate_synthetic_failover("repeated engine errors")
 
         artists = list(self.lines.values())
         artists.extend(list(self.stage_badges.values()))
@@ -1475,7 +1808,9 @@ class PublicEngagementDashboard:
 
     def run(self) -> None:
         self._setup_figure()
-        self.source.start()
+        started = self._safe_start_source()
+        if not started:
+            self._activate_synthetic_failover("startup failure")
         self._append_event("System online")
         self._append_event(f"Input source selected: {self.source_name}")
         self._append_event(f"UI mode: {self.ui_mode}")
@@ -1490,7 +1825,7 @@ class PublicEngagementDashboard:
             )
             plt.show()
         finally:
-            self.source.stop()
+            self._safe_stop_source()
 
 
 # =============================================================================
@@ -1501,15 +1836,80 @@ class PublicEngagementDashboard:
 def build_source(args: argparse.Namespace, cfg: DemoConfig) -> Tuple[BaseSignalSource, str]:
     preferred = args.source.lower()
 
+    def _load_ble_config(path: Path) -> Dict[str, str]:
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return {str(k): str(v) for k, v in payload.items() if isinstance(v, (str, int, float))}
+            return {}
+        except Exception:
+            return {}
+
+    def _save_ble_config(path: Path, payload: Dict[str, str]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     if preferred == "ble":
-        if not args.ble_address or not args.ble_char:
-            raise ValueError("BLE source requires --ble-address and --ble-char")
+        cfg_path = Path(args.ble_config).expanduser() if args.ble_config else (Path(__file__).resolve().parent / "demo_ble_config.json")
+        saved = _load_ble_config(cfg_path)
+
+        address = args.ble_address or saved.get("address")
+        char_uuid = args.ble_char or saved.get("char_uuid")
+        device_name = args.ble_device_name or saved.get("device_name") or "MYOWARE"
+        service_uuid = args.ble_service or saved.get("service_uuid")
 
         try:
-            source = BLEEMGSource(cfg.sample_rate_hz, args.ble_address, args.ble_char)
+            source = BLEEMGSource(
+                cfg.sample_rate_hz,
+                address=address,
+                char_uuid=char_uuid,
+                device_name=device_name,
+                service_uuid=service_uuid,
+                scan_timeout_s=args.ble_scan_timeout,
+                reconnect_backoff_s=args.ble_backoff,
+                max_reconnect_backoff_s=args.ble_max_backoff,
+                data_timeout_s=args.ble_data_timeout,
+            )
             source.start()
+            time.sleep(0.8)
             source.stop()
-            return BLEEMGSource(cfg.sample_rate_hz, args.ble_address, args.ble_char), "BLE"
+
+            resolved_address = source.resolved_address or address
+            resolved_char = source.resolved_char_uuid or char_uuid
+
+            if not resolved_address or not resolved_char:
+                raise RuntimeError("BLE auto-configuration failed to resolve address/characteristic")
+
+            if not args.ble_no_save:
+                _save_ble_config(
+                    cfg_path,
+                    {
+                        "address": resolved_address,
+                        "char_uuid": resolved_char,
+                        "device_name": device_name,
+                        "service_uuid": service_uuid or "",
+                    },
+                )
+
+            return (
+                BLEEMGSource(
+                    cfg.sample_rate_hz,
+                    address=resolved_address,
+                    char_uuid=resolved_char,
+                    device_name=device_name,
+                    service_uuid=service_uuid,
+                    scan_timeout_s=args.ble_scan_timeout,
+                    reconnect_backoff_s=args.ble_backoff,
+                    max_reconnect_backoff_s=args.ble_max_backoff,
+                    data_timeout_s=args.ble_data_timeout,
+                ),
+                f"BLE {resolved_address}",
+            )
         except Exception:
             if args.strict_source:
                 raise
@@ -1583,6 +1983,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--ble-address", default=None, help="BLE device MAC/address")
     parser.add_argument("--ble-char", default=None, help="BLE GATT characteristic UUID for notifications")
+    parser.add_argument("--ble-device-name", default="MYOWARE", help="BLE device name hint used for auto-discovery")
+    parser.add_argument("--ble-service", default=None, help="Optional BLE service UUID filter")
+    parser.add_argument("--ble-config", default="demo_ble_config.json", help="Path to persisted BLE auto-config JSON")
+    parser.add_argument("--ble-no-save", action="store_true", help="Do not persist discovered BLE settings")
+    parser.add_argument("--ble-scan-timeout", type=float, default=6.0, help="BLE scan timeout in seconds")
+    parser.add_argument("--ble-data-timeout", type=float, default=3.0, help="Reconnect if BLE notifications stall")
+    parser.add_argument("--ble-backoff", type=float, default=1.0, help="BLE reconnect initial backoff")
+    parser.add_argument("--ble-max-backoff", type=float, default=8.0, help="BLE reconnect max backoff")
 
     parser.add_argument("--dataset-dir", default=None, help="Base dataset directory (contains raw_signals/filtered_signals)")
     parser.add_argument("--dataset-source", choices=["raw", "filtered"], default="raw", help="Dataset subfolder for replay")
@@ -1601,6 +2009,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--event-high", type=float, default=0.28, help="Event trigger normalized threshold")
     parser.add_argument("--event-low", type=float, default=0.20, help="Event reset normalized threshold")
+    parser.add_argument("--runtime-recovery", action="store_true", default=True, help="Enable runtime source auto-recovery")
+    parser.add_argument("--no-runtime-recovery", action="store_false", dest="runtime_recovery", help="Disable runtime source auto-recovery")
+    parser.add_argument("--source-stall-timeout", type=float, default=6.0, help="Seconds of no samples before recovery")
+    parser.add_argument("--source-restart-cooldown", type=float, default=4.0, help="Minimum seconds between recoveries")
+    parser.add_argument("--source-max-restarts", type=int, default=5, help="Max recoveries before synthetic failover")
 
     return parser.parse_args()
 
@@ -1631,6 +2044,11 @@ def main() -> None:
         dashboard.autoscale_alpha = 0.30
         dashboard.render_stride = max(dashboard.render_stride, 3)
         dashboard.time_axis_view = dashboard.time_axis[::dashboard.render_stride]
+
+    dashboard.runtime_recovery_enabled = bool(args.runtime_recovery)
+    dashboard.source_stall_timeout_s = max(1.0, float(args.source_stall_timeout))
+    dashboard.source_restart_cooldown_s = max(0.5, float(args.source_restart_cooldown))
+    dashboard.source_max_restarts = max(1, int(args.source_max_restarts))
 
     dashboard.run()
 

@@ -22,7 +22,8 @@ This repository is ready for local experimentation, demos, and dissertation/rese
 - `public_engagement_demo.py` — Real-time public demo UI (BLE/Serial/Synthetic, scrolling multi-stage plots, events, and gripper mockup).
 
 ### Firmware
-- `myoware_acquisition.ino` — ESP32 firmware for 1 kHz EMG acquisition and serial CSV streaming.
+- `firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` — ESP32 serial firmware (1 kHz CSV stream).
+- `firmware/esp32/myoware_ble_acquisition/myoware_ble_acquisition.ino` — ESP32 BLE firmware (1 kHz notification stream).
 
 ### Data / Outputs
 - `EMGdataset/dataset/raw_signals/` — Raw volunteer CSV data.
@@ -31,9 +32,12 @@ This repository is ready for local experimentation, demos, and dissertation/rese
 
 ### Documentation
 - `docs/EMG_Setup_Guide.md` — Hardware setup and troubleshooting.
+- `docs/ESP32_BLE_SETUP_GUIDE.md` — Detailed ESP32 BLE wiring/flash/validation guide.
 - `docs/TESTING_GUIDE.md` — Validation/testing procedures.
 - `docs/Guidance.md` and `docs/COMPLETE SYSTEM SUMMARY.md` — Extended reference notes.
 - `docs/PUBLIC_DEMO_GUIDE.md` — Operator guide for live public engagement sessions.
+- `docs/EXPO_RUN_CHECKLIST.md` — Operational checklist and incident playbook for expo runs.
+- `docs/PRODUCTION_STRUCTURE.md` — Production-ready repository layout and conventions.
 - `CONTRIBUTING.md` — Contribution workflow and pre-PR validation.
 
 ---
@@ -107,9 +111,22 @@ python main_pipeline.py --mode live --port COM3 --duration 10 --preset balanced
 
 One-click launchers (Windows):
 
-- `run_demo.bat` → default safe launcher (synthetic + gripper UI)
-- `run_demo_emulated.bat` → dataset replay loop + gripper UI
-- `run_demo_debug.bat` → dataset replay loop + debug UI (numeric telemetry + controls)
+- `run_demo.bat` → root compatibility wrapper
+- `run_demo_emulated.bat` → root compatibility wrapper
+- `run_demo_debug.bat` → root compatibility wrapper
+- `run_demo_ble_auto.bat` → root compatibility wrapper
+- `scripts/windows/run_demo.bat` → default safe launcher (synthetic + gripper UI)
+- `scripts/windows/run_demo_emulated.bat` → dataset replay loop + gripper UI
+- `scripts/windows/run_demo_debug.bat` → dataset replay loop + debug UI
+- `scripts/windows/run_demo_ble_auto.bat` → BLE-first launcher (auto-setup + reconnect-safe)
+
+BLE setup helper:
+
+```bash
+python ble_demo_setup.py --ble-device-name MYOWARE --config demo_ble_config.json
+```
+
+This validates BLE notifications and saves discovered settings for repeated demo sessions.
 
 Synthetic fallback demo (always works):
 
@@ -126,7 +143,13 @@ python public_engagement_demo.py --source serial --port COM3 --baud 921600 --ui-
 BLE demo (dry EMG wearable):
 
 ```bash
-python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char 0000ffe1-0000-1000-8000-00805f9b34fb --ui-mode gripper
+python public_engagement_demo.py --source ble --ui-mode gripper
+```
+
+Optional explicit BLE parameters:
+
+```bash
+python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char beb5483e-36e1-4688-b7f5-ea07361b26a8 --ble-device-name MYOWARE --ui-mode gripper
 ```
 
 Dataset replay demo (sequentially plays all dataset files as pseudo-live input):
@@ -163,6 +186,8 @@ For live streams, if your source sends dual channels, the app will automatically
 
 Behavior notes:
 - If BLE/Serial cannot initialize, demo auto-falls back to synthetic input by default.
+- BLE mode supports automatic address/characteristic resolution, stream-stall watchdog, and exponential reconnect backoff.
+- BLE settings are persisted in `demo_ble_config.json` unless `--ble-no-save` is used.
 - Dataset source replays CSV files sequentially from `EMGdataset/dataset/raw_signals` or `filtered_signals`.
 - Use `--strict-source` to fail fast instead of falling back.
 - `--ui-mode gripper` shows the gripper panel; `--ui-mode debug` swaps in a live debug console.
@@ -212,7 +237,7 @@ A standard run writes artifacts into `results/` (or your chosen `--output`):
 
 ## ESP32 Firmware Notes
 
-`myoware_acquisition.ino` is configured for:
+`firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` is configured for:
 - 1 kHz sampling
 - 12-bit ADC reads
 - CSV serial output (`timestamp_ms,adc_raw_value`)
@@ -241,7 +266,17 @@ Default signal pin is GPIO 34 (ADC1). Ensure firmware settings match Python seri
 ├─ frequency_analyzer.py
 ├─ digital_twin_gripper.py
 ├─ emg_filters.py
-├─ myoware_acquisition.ino
+├─ firmware/
+│  └─ esp32/
+│     ├─ myoware_serial_acquisition/
+│     └─ myoware_ble_acquisition/
+├─ scripts/
+│  └─ windows/
+├─ configs/
+│  └─ demo/
+├─ operations/
+│  ├─ logs/
+│  └─ snapshots/
 ├─ EMGdataset/
 │  └─ dataset/
 │     ├─ raw_signals/
