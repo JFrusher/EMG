@@ -1,305 +1,108 @@
-# EMG Signal Processing & Digital Twin Gripper
+# EMG Signal to Action
 
-End-to-end EMG (Electromyography) acquisition and processing pipeline for prosthetic control research, with:
-- ESP32 + MyoWare data capture firmware
-- Multi-stage EMG filtering and feature extraction
-- Frequency-domain analysis tools
-- Digital twin gripper visualization
-- Synthetic-data mode for testing without hardware
+A live demonstrator that turns muscle signals into a moving gripper, built to run in
+front of people. It shows the whole chain on screen — raw electrode voltage through
+notch, bandpass, rectification and smoothing to a control envelope — so the filtering is
+visible rather than asserted.
 
-This repository is ready for local experimentation, demos, and dissertation/research workflows.
+Runs with no hardware attached.
 
----
-
-## Repository Contents
-
-### Core Python Modules
-- `main_pipeline.py` — Main CLI entrypoint (acquire/load/process/test).
-- `emg_signal_processor.py` — EMGProcessor class with filters, envelope, SNR, features, and control detection.
-- `frequency_analyzer.py` — FFT/PSD analysis and frequency-response plotting.
-- `digital_twin_gripper.py` — Gripper simulation and visualization dashboard.
-- `emg_filters.py` — Reusable filter presets (`default`, `aggressive`, `balanced`, etc.).
-- `public_engagement_demo.py` — Real-time public demo UI (BLE/Serial/Synthetic, scrolling multi-stage plots, events, and gripper mockup).
-
-### Firmware
-- `firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` — ESP32 serial firmware (1 kHz CSV stream).
-- `firmware/esp32/myoware_ble_acquisition/myoware_ble_acquisition.ino` — ESP32 BLE firmware (1 kHz notification stream).
-
-### Data / Outputs
-- `EMGdataset/dataset/raw_signals/` — Raw volunteer CSV data.
-- `EMGdataset/dataset/filtered_signals/` — Pre-filtered volunteer CSV data.
-- `results/` — Generated plots and summaries from pipeline runs.
-
-### Documentation
-- `docs/EMG_Setup_Guide.md` — Hardware setup and troubleshooting.
-- `docs/ESP32_BLE_SETUP_GUIDE.md` — Detailed ESP32 BLE wiring/flash/validation guide.
-- `docs/TESTING_GUIDE.md` — Validation/testing procedures.
-- `docs/Guidance.md` and `docs/COMPLETE SYSTEM SUMMARY.md` — Extended reference notes.
-- `docs/PUBLIC_DEMO_GUIDE.md` — Operator guide for live public engagement sessions.
-- `docs/EXPO_RUN_CHECKLIST.md` — Operational checklist and incident playbook for expo runs.
-- `docs/PRODUCTION_STRUCTURE.md` — Production-ready repository layout and conventions.
-- `CONTRIBUTING.md` — Contribution workflow and pre-PR validation.
-
----
-
-## System Pipeline
-
-Typical processing chain:
-1. Notch filtering (power-line rejection)
-2. Bandpass filtering (EMG band isolation)
-3. Rectification
-4. Low-pass smoothing
-5. Envelope extraction
-6. Feature extraction + control interpretation
-7. Visualization + export
-
----
-
-## Requirements
-
-- Python 3.9+
-- Windows/macOS/Linux
-- Optional (live mode):
-  - ESP32 board
-  - MyoWare sensor + electrodes
-  - Serial connection to host machine
-
-Install dependencies:
+## Run it
 
 ```bash
-pip install -r requirements.txt
+uv run emg-demo --profile dev
 ```
 
----
+That opens a browser on a synthetic signal. No ESP32, no electrodes, no setup.
 
-## Quick Start
-
-### 1) Run without hardware (synthetic data)
+For a stand:
 
 ```bash
-python main_pipeline.py --mode synthetic
+uv run emg-demo --profile expo --fullscreen
 ```
 
-Optional parameters:
+Without `uv`, any Python 3.12+ works:
 
 ```bash
-python main_pipeline.py --mode synthetic --duration 10 --snr 8 --preset balanced --output ./results
+python -m venv .venv && .venv/Scripts/pip install -e .   # Linux/macOS: .venv/bin/pip
+.venv/Scripts/python -m emgdemo.cli --profile dev
 ```
 
-### 2) Process a specific CSV file
+## Where the signal comes from
+
+| `--source` | What it is |
+|---|---|
+| `synthetic` | Generated EMG. Always works; the automatic fallback |
+| `dataset` | Recorded volunteer sessions, replayed at real speed |
+| `serial` | ESP32 over USB — `--port COM3` |
+| `ble` | ESP32 over Bluetooth — `--ble-name MYOWARE` |
+
+Any live source that stops delivering is restarted, and if it stays dead the demo
+switches to synthetic and says so, rather than freezing.
+
+## Controls
+
+`Space` pause · `C` calibrate · `R` reset · `F` fullscreen — or the buttons.
+
+**Calibrate** is the one that matters with a participant attached: four seconds of rest
+then squeeze, which maps that person's range onto the gripper. Without it the demo
+adapts on its own, less well.
+
+## Profiles
+
+Settings live in TOML rather than in twenty command-line flags:
+
+```toml
+[source]
+kind = "ble"
+ble_name = "MYOWARE"
+
+[settings.events]
+threshold_high = 0.35     # harder to trigger
+```
 
 ```bash
-python main_pipeline.py --mode load --file path/to/file.csv --preset default --output ./results
+uv run emg-demo --profile ./my-stand.toml
 ```
 
-### 3) Load bundled volunteer dataset
+Shipped profiles are in [src/emgdemo/profiles/](src/emgdemo/profiles/). An unknown key
+is an error, not a shrug — a typo at a stand should fail loudly.
+
+## Layout
+
+```
+src/emgdemo/
+  sources/    where samples come from      dsp/       filters, envelope, normalization
+  domain/     events, gripper, calibration engine.py  the one clock
+  server.py   serves the page              ui/        what you see
+```
+
+The engine has no idea anything is being drawn. It publishes state; the interface reads
+it. That is what lets the renderer be replaced without touching the signal path.
+
+## Developing
 
 ```bash
-python main_pipeline.py --mode load --volunteer 1 --dataset-source raw --preset balanced
+uv run pytest                          # 169 tests, no hardware needed
+uv run pytest -m soak                  # two-minute stability run
+EMG_SOAK_SECONDS=7200 uv run pytest -m soak    # the full pre-expo check
+uv run ruff check src tests
 ```
 
-- `--dataset-source` options: `raw`, `filtered`
-- `--channel` can select a channel in multichannel CSVs (name or index)
+`--headless` prints frames instead of serving them, which is how to debug a stand with
+no screen.
 
-### 4) Live acquisition from ESP32
+## More
 
-```bash
-python main_pipeline.py --mode live --port COM3 --duration 10 --preset balanced
-```
+- [docs/HARDWARE.md](docs/HARDWARE.md) — wiring, electrodes, flashing the ESP32
+- [docs/EXPO.md](docs/EXPO.md) — event-day checklist and what to do when it misbehaves
 
-### 5) Public engagement live demonstrator (recommended for demos)
+## Data
 
-One-click launchers (Windows):
+`EMGdataset/` holds recordings from eleven volunteers. Check what you are permitted to
+publish or display before sharing this repository or running `--source dataset` in
+public.
 
-- `run_demo.bat` → root compatibility wrapper
-- `run_demo_emulated.bat` → root compatibility wrapper
-- `run_demo_debug.bat` → root compatibility wrapper
-- `run_demo_ble_auto.bat` → root compatibility wrapper
-- `scripts/windows/run_demo.bat` → default safe launcher (synthetic + gripper UI)
-- `scripts/windows/run_demo_emulated.bat` → dataset replay loop + gripper UI
-- `scripts/windows/run_demo_debug.bat` → dataset replay loop + debug UI
-- `scripts/windows/run_demo_ble_auto.bat` → BLE-first launcher (auto-setup + reconnect-safe)
+## Licence
 
-BLE setup helper:
-
-```bash
-python ble_demo_setup.py --ble-device-name MYOWARE --config demo_ble_config.json
-```
-
-This validates BLE notifications and saves discovered settings for repeated demo sessions.
-
-Synthetic fallback demo (always works):
-
-```bash
-python public_engagement_demo.py --source synthetic --ui-mode gripper
-```
-
-Serial demo (ESP32 via USB):
-
-```bash
-python public_engagement_demo.py --source serial --port COM3 --baud 921600 --ui-mode gripper
-```
-
-BLE demo (dry EMG wearable):
-
-```bash
-python public_engagement_demo.py --source ble --ui-mode gripper
-```
-
-Optional explicit BLE parameters:
-
-```bash
-python public_engagement_demo.py --source ble --ble-address XX:XX:XX:XX:XX:XX --ble-char beb5483e-36e1-4688-b7f5-ea07361b26a8 --ble-device-name MYOWARE --ui-mode gripper
-```
-
-Dataset replay demo (sequentially plays all dataset files as pseudo-live input):
-
-```bash
-python public_engagement_demo.py --source dataset --dataset-source raw --replay-speed 1.0 --ui-mode gripper
-```
-
-Loop continuously for exhibition use:
-
-```bash
-python public_engagement_demo.py --source dataset --dataset-source raw --replay-speed 1.0 --replay-loop --ui-mode gripper
-```
-
-Debug console mode (replaces gripper panel with live numeric telemetry + control buttons):
-
-```bash
-python public_engagement_demo.py --source dataset --dataset-source raw --replay-loop --ui-mode debug
-```
-
-Dual-pad mode (left pad closes, right pad opens; summed signal drives stage plots):
-
-```bash
-python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --ui-mode gripper
-```
-
-Dual-pad emulation with ~1s delayed side B (for demonstration effects):
-
-```bash
-python public_engagement_demo.py --source dataset --dataset-source raw --side-a-channel HandClose --side-b-channel HandOpen --replay-loop --emulate-dual-delay --dual-delay-sec 1.0 --ui-mode gripper
-```
-
-For live streams, if your source sends dual channels, the app will automatically sense both sides and detect co-contraction events.
-
-Behavior notes:
-- If BLE/Serial cannot initialize, demo auto-falls back to synthetic input by default.
-- BLE mode supports automatic address/characteristic resolution, stream-stall watchdog, and exponential reconnect backoff.
-- BLE settings are persisted in `demo_ble_config.json` unless `--ble-no-save` is used.
-- Dataset source replays CSV files sequentially from `EMGdataset/dataset/raw_signals` or `filtered_signals`.
-- Use `--strict-source` to fail fast instead of falling back.
-- `--ui-mode gripper` shows the gripper panel; `--ui-mode debug` swaps in a live debug console.
-- Debug mode includes interactive buttons: Pause/Resume, Reset events, Snapshot, and AutoScale.
-- The live UI always keeps scrolling stage plots from raw signal to final envelope.
-- A live "Noise Reduction vs Raw" panel quantifies stage-by-stage cleaning using a jitter/noise proxy, making filter benefit explicit for viewers.
-- In dual-pad mode, left/close and right/open amplitudes are shown as bilateral bars with a center line, and co-contraction events are logged.
-- A `Calibrate` button is available in both gripper and debug modes to tune left/right sensitivity per participant.
-
----
-
-## Useful CLI Options
-
-```text
---mode {synthetic,live,load}
---test {all,synthetic,stability,serial,real}
---preset <name>
---list-presets
---analyze-filtered
---output <dir>
-```
-
-Show available presets:
-
-```bash
-python main_pipeline.py --list-presets
-```
-
-Run built-in checks:
-
-```bash
-python main_pipeline.py --test all
-```
-
----
-
-## Output Files
-
-A standard run writes artifacts into `results/` (or your chosen `--output`):
-- `01_emg_processing_pipeline.png`
-- `02_filter_frequency_response.png`
-- `03_gripper_control.png`
-- `04_filtered_signal_frequency_analysis.png` (when `--analyze-filtered` is enabled)
-- `results_summary.csv`
-
----
-
-## ESP32 Firmware Notes
-
-`firmware/esp32/myoware_serial_acquisition/myoware_serial_acquisition.ino` is configured for:
-- 1 kHz sampling
-- 12-bit ADC reads
-- CSV serial output (`timestamp_ms,adc_raw_value`)
-- High baud rate (921600)
-
-Default signal pin is GPIO 34 (ADC1). Ensure firmware settings match Python serial settings.
-
----
-
-## Suggested Workflow
-
-1. Validate software path first (`--mode synthetic`).
-2. Run serial test (`--test serial`) before recording live sessions.
-3. Record short sessions (5–10 s) and inspect generated plots.
-4. Tune/compare presets in `emg_filters.py` for your experiment goals.
-5. Track results folders per run for reproducibility.
-
----
-
-## Project Structure
-
-```text
-.
-├─ main_pipeline.py
-├─ emg_signal_processor.py
-├─ frequency_analyzer.py
-├─ digital_twin_gripper.py
-├─ emg_filters.py
-├─ firmware/
-│  └─ esp32/
-│     ├─ myoware_serial_acquisition/
-│     └─ myoware_ble_acquisition/
-├─ scripts/
-│  └─ windows/
-├─ configs/
-│  └─ demo/
-├─ operations/
-│  ├─ logs/
-│  └─ snapshots/
-├─ EMGdataset/
-│  └─ dataset/
-│     ├─ raw_signals/
-│     └─ filtered_signals/
-├─ results/
-└─ docs/
-```
-
----
-
-## Reproducibility Tips
-
-- Keep filter preset and CLI args logged per run.
-- Save outputs to a timestamped folder via `--output`.
-- Avoid editing raw datasets in place.
-- Pin Python package versions if sharing across machines.
-
----
-
-## License
-
-This project is licensed under the MIT License. See `LICENSE`.
-
-## Contributing
-
-See `CONTRIBUTING.md` for setup, validation steps, and pull request guidance.
+MIT — see [LICENSE](LICENSE).

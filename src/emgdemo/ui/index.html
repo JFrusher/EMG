@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EMG Signal to Action</title>
+<!-- Empty data URI: stops the browser requesting a favicon we do not ship. -->
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">EMG Signal to Action</div>
+  <div class="source">
+    <span class="dot" id="status-dot"></span>
+    <span class="source-name" id="source-name">connecting…</span>
+    <span class="chip" id="source-state"></span>
+  </div>
+  <div class="header-right">
+    <span id="session-clock">0.0 s</span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <button id="btn-pause" type="button" class="primary">Pause</button>
+  <button id="btn-calibrate" type="button">Calibrate</button>
+  <button id="btn-reset" type="button">Reset</button>
+  <button id="btn-snapshot" type="button">Snapshot</button>
+  <span class="toolbar-note">space pause · c calibrate · r reset · f fullscreen</span>
+</div>
+
+<main>
+
+  <div class="column">
+
+    <div class="tiles">
+      <div class="tile">
+        <div class="tile-label">Sample rate</div>
+        <div class="tile-value"><span id="tile-rate">—</span> <small id="tile-rate-design"></small></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Samples</div>
+        <div class="tile-value" id="tile-samples">0</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Activations</div>
+        <div class="tile-value" id="tile-events">0</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Co-contractions</div>
+        <div class="tile-value" id="tile-cocontractions">0</div>
+      </div>
+    </div>
+
+    <section class="card traces">
+      <div class="card-head">
+        <span class="card-title">Processing chain</span>
+        <span class="card-note" id="traces-note">raw → notch → bandpass → rectify → low-pass → envelope</span>
+      </div>
+      <div class="card-body">
+        <canvas id="traces"></canvas>
+      </div>
+    </section>
+
+  </div>
+
+  <aside class="column">
+
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Gripper</span>
+        <span class="chip" id="grip-state">adaptive</span>
+      </div>
+      <div class="card-body">
+        <canvas id="gripper"></canvas>
+
+        <div class="force-row">
+          <div class="band" id="band" role="img" aria-label="Grip strength band">
+            <span class="band-seg" id="band-open">Open</span>
+            <span class="band-seg" id="band-light">Light</span>
+            <span class="band-seg" id="band-power">Power</span>
+          </div>
+          <span class="force-value" id="grip-force">0.0 N</span>
+        </div>
+
+        <div class="drive">
+          <div class="drive-title">Driven by</div>
+          <div class="pads">
+            <div class="pad-track"><div class="pad-fill pad-close" id="pad-a"></div></div>
+            <div class="pad-centre"></div>
+            <div class="pad-track"><div class="pad-fill pad-open" id="pad-b"></div></div>
+          </div>
+          <div class="pad-labels">
+            <span>Close <b id="pad-a-value">0.00</b></span>
+            <span>Open <b id="pad-b-value">0.00</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Noise removed vs raw</span>
+      </div>
+      <div class="card-body flush">
+        <table class="data">
+          <thead>
+            <tr><th>Stage</th><th class="num">Cleaner</th></tr>
+          </thead>
+          <tbody id="metrics"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card fill">
+      <div class="card-head">
+        <span class="card-title">Activity</span>
+        <span class="card-note" id="log-note"></span>
+      </div>
+      <div class="card-body flush">
+        <div class="table-scroll">
+          <table class="data">
+            <thead>
+              <tr><th>Time</th><th>Event</th></tr>
+            </thead>
+            <tbody id="log"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </aside>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

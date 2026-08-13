@@ -55,6 +55,18 @@ Thumbs.db
 Desktop.ini
 
 # =========================
+# Scratch / working notes
+# =========================
+docs/tmp/
+
+# =========================
+# Superseded implementation
+# =========================
+# The pre-rewrite demo and batch pipeline. Kept on disk as a behavioural reference
+# while porting; recoverable from the `v0-archive` tag if this folder is ever lost.
+legacy/
+
+# =========================
 # Project-generated outputs
 # =========================
 results/

@@ -1,0 +1,10 @@
+# Working on the demo: synthetic input, no browser hijacking, shorter traces.
+
+[source]
+kind = "synthetic"
+
+[server]
+fullscreen = false
+
+[settings]
+trace_seconds = 5.0
